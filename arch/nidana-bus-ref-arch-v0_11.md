@@ -2,7 +2,7 @@
 
 **Status:** Draft  
 **Author:** Purbo  
-**Version:** 0.11.0
+**Version:** 0.11.2
 **Date:** 2026-04-14
 
 ## Abstract
@@ -27,6 +27,8 @@ This reference documents the architectural concepts, layered structure, lifecycl
     - [2.3 Bus (Runtime)](#23-bus-runtime)
     - [2.4 Message Envelope](#24-message-envelope)
       - [Envelope Field Definitions](#envelope-field-definitions)
+      - [Envelope Lineage for Multi-Input Combinators](#envelope-lineage-for-multi-input-combinators)
+      - [Publishing Context for Shell-Boundary Code](#publishing-context-for-shell-boundary-code)
     - [2.5 Topic Initialization](#25-topic-initialization)
       - [Who Creates Topics?](#who-creates-topics)
       - [`getCurrentValue()` Contract](#getcurrentvalue-contract)
@@ -84,6 +86,8 @@ This reference documents the architectural concepts, layered structure, lifecycl
     - [9.1 Error Propagation Model](#91-error-propagation-model)
     - [9.2 Principles](#92-principles)
     - [9.3 Error Handling Approaches](#93-error-handling-approaches)
+      - [`AppError` Contract](#apperror-contract)
+      - [Circuit Breaker as Stream State](#circuit-breaker-as-stream-state)
   - [10. Resilience Properties](#10-resilience-properties)
     - [10.1 Eliminated by Construction](#101-eliminated-by-construction)
     - [10.2 Requires Discipline (Guardrails Provided)](#102-requires-discipline-guardrails-provided)
@@ -148,6 +152,8 @@ This reference documents the architectural concepts, layered structure, lifecycl
     - [16.1 Complementary, Not Competing](#161-complementary-not-competing)
   - [17. Open Questions](#17-open-questions)
     - [17.1 Testing Strategy](#171-testing-strategy)
+      - [TestBus Contract](#testbus-contract)
+      - [Scheduler Injection API](#scheduler-injection-api)
     - [17.2 DevTools and Observability](#172-devtools-and-observability)
     - [17.3 Scaling to Feature Teams](#173-scaling-to-feature-teams)
     - [17.4 Server-Driven Topologies](#174-server-driven-topologies)
@@ -246,8 +252,8 @@ The **Bus** is the runtime engine. Its responsibilities:
 - Maintains the **topic registry** (creation, lookup, type enforcement). See [§2.5](#25-topic-initialization) for the topic creation model.
 - **Activates topologies** by taking a topology declaration and wiring it into live reactive subscriptions.
 - **Deactivates topologies** by disposing subscriptions when a lifecycle scope ends.
-- **Delegates reactive execution** to the underlying library (RxDart, RxJS, Flow, Combine). The bus does not implement schedulers, backpressure, or stream combinators. It provides a seam for injecting a scheduler (used in tests to replace wall-clock time with a virtual time scheduler) and otherwise defers to the reactive engine.
-- **Error delegation.** The bus delegates reactive execution to the underlying library (RxDart, Flow, Combine). If a topology's pure transformer throws an unhandled exception, the underlying reactive framework will terminate that topology's subscription. The bus does *not* intercept developer exceptions. This is by design: the architecture's error model ([§9](#9-error-handling-strategies)) uses error-as-values, making unhandled exceptions a code defect, not a runtime scenario the bus should paper over.
+- **Delegates reactive execution** to the underlying library (RxDart, RxJS, Flow, Combine). The bus does not implement schedulers, backpressure, or stream combinators. It provides a seam for injecting a scheduler (see [§17.1, Scheduler Injection API](#scheduler-injection-api)) and otherwise defers to the reactive engine.
+- **Error delegation.** The bus delegates reactive execution to the underlying library (RxDart, Flow, Combine). If a pure transformer throws an unhandled exception, the underlying reactive framework terminates **that pipeline's subscription only**; other pipelines within the same topology continue operating. The bus does not intercept developer exceptions. This is by design: the architecture's error model ([§9](#9-error-handling-strategies)) uses error-as-values, making unhandled exceptions a code defect, not a runtime scenario the bus should paper over. In dev mode, the bus logs the failed pipeline (topology ID, input/output topics, exception) to aid diagnosis.
 
 Backpressure and rate-limiting are topology-level concerns, expressed through combinators declared in the topology itself (see [§5.3](#53-reactive-combinators)). Error handling is a shell-boundary concern owned by services and modules (see [§9](#9-error-handling-strategies)).
 
@@ -310,6 +316,52 @@ User taps "Place Order"
 The correlationId tells you "show me everything related to this order." The causation chain tells you "show me *why* this payment was attempted" by walking the causationId links backward. This distinction matters for debugging (tracing a specific failure path) versus monitoring (tracking operation completion rates).
 
 **Transparent propagation.** Pure transformers operate solely on the payload `T` and are unaware of the `MessageEnvelope`. The bus automatically threads correlation and causation IDs: when a topology consumes a message from an input topic and the topology's wiring produces a publish to an output topic, the bus attaches the incoming message's `id` as the outgoing message's `causationId` and preserves the `correlationId`. The specific mechanism is an implementation concern of the bus runtime (varying by platform) and does not affect topology or transformer code. The invariant is: *within a single topology activation, the causal chain is maintained automatically without transformer involvement.*
+
+#### Envelope Lineage for Multi-Input Combinators
+
+Single-input operators (`map`, `filter`, `switchMap`) have exactly one input envelope per output. The bus uses that envelope's `id` as the output's `causationId` and preserves its `correlationId`.
+
+Multi-input operators (`combine`, `combineLatest`, `withLatestFrom`) receive N input envelopes. The bus must determine which envelope is the causal parent:
+
+| Combinator | Trigger rule | `causationId` source | `correlationId` rule |
+|---|---|---|---|
+| `withLatestFrom` | Primary stream (left operand) | The primary stream's envelope | Preserve the primary's `correlationId` |
+| `combine` / `combineLatest` | The most recently arrived input | The envelope of the input whose new emission caused the operator to fire | See below |
+
+**`correlationId` merge for `combine`.** If all input envelopes share the same `correlationId`, preserve it. If they carry different `correlationId` values (cross-flow combine), generate a new `correlationId` for the output and record the parent correlation IDs in an optional `parentCorrelationIds: List<String>` field on the envelope. This preserves traceability across flow boundaries without forcing a single-parent model onto inherently multi-parent joins.
+
+**Simultaneous triggers.** If a reactive engine delivers two input updates within the same microtask such that the operator fires once, the implementation chooses the last-delivered input as the trigger. This is a platform-specific detail; the architectural rule is that exactly one input is the causal parent per output emission.
+
+```
+// Example: combine(cart, auth) where auth changes
+// cart envelope: id="e-01", correlationId="sess-42"
+// auth envelope: id="e-02", correlationId="sess-42"  (same session)
+// output envelope:
+//   causationId = "e-02"     (auth was the trigger)
+//   correlationId = "sess-42" (same correlationId, preserved)
+
+// Example: combine(userPrefs, livePrice) with different correlationIds
+// userPrefs envelope: id="e-10", correlationId="pref-update-5"
+// livePrice envelope: id="e-11", correlationId="market-feed-9"
+// output envelope:
+//   causationId = "e-11"                      (livePrice was the trigger)
+//   correlationId = "derived-77"              (new, because inputs diverge)
+//   parentCorrelationIds = ["pref-update-5", "market-feed-9"]
+```
+
+#### Publishing Context for Shell-Boundary Code
+
+Within a topology, the `source` field is automatically set to `"topology:<topologyId>"`. For imperative publishes at the shell boundary (services, executors, platform adapters), the source must be explicitly declared. The bus provides a named publisher factory:
+
+```
+// Create a named publisher for a service
+val publisher = bus.publisher("service:payment-gateway")
+publisher.publish(PaymentTopics.result, paymentResult)
+
+// The resulting envelope has source = "service:payment-gateway"
+```
+
+In dev mode, an imperative `bus.publish(topic, value)` call without a named publisher emits a diagnostic warning: the envelope's `source` field defaults to `"unknown"` and the bus logs a message identifying the call site. This encourages all shell-boundary code to use named publishers for full traceability.
 
 ### 2.5 Topic Initialization
 
@@ -1423,11 +1475,35 @@ graph TB
 
 For concerns like logging and tracing that need to observe *all* traffic, two approaches:
 
-**Approach A: Topic-level middleware.** The bus supports interceptors that observe every `publish` and `subscribe` event on any topic. The interceptor receives the `MessageEnvelope` and can log, trace, or transform it. This is a bus-level concern, not a topology.
+**Approach A: Bus-level interceptors (recommended).** The bus supports interceptors that observe every publish event on any topic. Interceptors are **observe-only by default**: they receive the `MessageEnvelope` and the target topic reference, but cannot mutate the payload, block delivery, or alter the envelope. This constraint preserves the architecture's guarantee that topology behavior is determined solely by the declared wiring.
+
+```
+// Interceptor contract
+interface BusInterceptor {
+    fun onPublish(topic: TopicRef, envelope: MessageEnvelope<*>)
+}
+
+// Registration
+bus.addInterceptor(loggingInterceptor)
+bus.removeInterceptor(loggingInterceptor)
+
+// Example: structured logging interceptor
+class LoggingInterceptor : BusInterceptor {
+    override fun onPublish(topic: TopicRef, envelope: MessageEnvelope<*>) {
+        logger.info(
+            "topic={} id={} correlation={} causation={} source={}",
+            topic.name, envelope.id, envelope.correlationId,
+            envelope.causationId, envelope.source
+        )
+    }
+}
+```
+
+Interceptors execute synchronously in publication order, before the value is delivered to subscribers. Multiple interceptors run in registration order. Interceptors must not throw; an exception in an interceptor is logged and swallowed (it must not disrupt message delivery).
 
 **Approach B: Dedicated audit topic.** Every `publish` operation also emits a copy to a global `Topic<AuditEntry>`. Cross-cutting services subscribe to this topic. This keeps the bus simpler but doubles message volume.
 
-**Recommendation:** Approach A for production logging/tracing (lower overhead), Approach B for development/debugging tooling (easier to build a dev UI around).
+**Recommendation:** Approach A for production logging/tracing (lower overhead, no message duplication). Approach B for development/debugging tooling where a subscribable stream of all traffic is convenient (e.g., feeding a DevTools envelope inspector).
 
 ### 8.3 Navigation as a Cross-Cutting Concern
 
@@ -1456,16 +1532,31 @@ sealed interface NavIntent {
     data class GoTo(val route: Route, val args: Map<String, Any>? = null) : NavIntent
     data class Replace(val route: Route, val args: Map<String, Any>? = null) : NavIntent
     data object Back : NavIntent
-    data class BackTo(val route: Route) : NavIntent
-    data class BackWithResult(val result: Any) : NavIntent
 
-    // Deep link handling
+    // Deep link handling (pre-resolution only; resolved before reaching executor)
     data class DeepLink(val uri: Uri) : NavIntent
 
     // Modal / overlay
     data class ShowModal(val route: Route, val args: Map<String, Any>? = null) : NavIntent
     data object DismissModal : NavIntent
 }
+
+// Post-resolution ADT: excludes DeepLink (all deep links resolved to typed intents)
+sealed interface ResolvedNavIntent {
+    data class GoTo(val route: Route, val args: Map<String, Any>? = null) : ResolvedNavIntent
+    data class Replace(val route: Route, val args: Map<String, Any>? = null) : ResolvedNavIntent
+    data object Back : ResolvedNavIntent
+    data class ShowModal(val route: Route, val args: Map<String, Any>? = null) : ResolvedNavIntent
+    data object DismissModal : ResolvedNavIntent
+}
+
+// Confirmed route transition, derived from executor feedback
+data class RouteTransition(
+    val from: RouteState,
+    val to: RouteState,
+    val intent: ResolvedNavIntent,
+    val timestamp: DateTime,
+)
 ```
 
 The `Route` type is a typed reference, analogous to how `Topic<T>` replaced string topic names. A `RouteRegistry` provides compile-time route safety and IDE discoverability:
@@ -1485,6 +1576,8 @@ object AuthRoutes {
 
 Whether `Route` should carry type parameters for its arguments (e.g., `Route<PaymentArgs>`) is a platform-specific design decision. Typed route arguments provide compile-time safety for argument passing but add complexity to the route registry. The reference architecture leaves this open; platform implementations should choose based on the capabilities of their routing framework.
 
+**`BackTo` as a platform extension.** Some platforms support "pop until route" natively (e.g., Flutter's `Navigator.popUntil`), while others do not (GoRouter has no `popUntil`). `BackTo` is not part of the portable `NavIntent` or `ResolvedNavIntent` ADTs. Platforms that support it can define a `NavIntentExt.BackTo(route: Route)` extension variant handled by their executor. The navigation topology passes unrecognized extension variants through to the executor unchanged.
+
 **Note on Route's type safety model.** `Route` follows the same typed-by-reference pattern as `Topic<T>`. The `Route` constructor accepts a string path, but that string is an internal identity (used for serialization, deep link matching, and debugging), not something consumers pass around. Code that navigates always uses the typed constant (`CheckoutRoutes.cart`, not `"checkout/cart"`), gaining compile-time checking and IDE discoverability. The string inside the constructor is no more a public API surface than the name string inside a `Topic<T>` definition. This distinction matters: the route system is already effectively typed at every usage site even though `Route` is not parameterized.
 
 #### Navigation Topics
@@ -1494,13 +1587,17 @@ abstract class NavigationTopics {
     // Input: pages publish intents here
     static final intent = EventTopic<NavIntent>("nav.intent")
 
-    // Output: the resolved current route, after guards and redirects
+    // Internal: post-guard, post-deep-link-resolution intents for the executor
+    static final resolvedIntent = EventTopic<ResolvedNavIntent>("nav.resolved-intent")
+
+    // Output: confirmed current route, written by the NavigationExecutor after
+    // the platform router has completed the transition
     static final currentRoute = StateTopic<RouteState>(
         "nav.current-route",
         initial: RouteState.initial(),
     )
 
-    // Output: navigation history for back-stack awareness
+    // Output: confirmed navigation history for back-stack awareness and analytics
     static final history = ReplayTopic<RouteTransition>(
         "nav.history",
         bufferSize: 20,
@@ -1508,11 +1605,20 @@ abstract class NavigationTopics {
 }
 ```
 
-`RouteState` carries the resolved route after all guards and redirects have been applied. Downstream topologies can read it to know which screen is active without coupling to the navigation framework. `RouteTransition` records the from/to pair for each navigation event, enabling analytics observation and back-stack reasoning.
+**Two-stage navigation model.** The navigation pipeline has two distinct stages:
+
+1. **Intent processing** (pure core): `intent` → guards → deep link resolution → `resolvedIntent`. This stage is a topology with pure transforms. It decides *where* to navigate.
+2. **Confirmed navigation** (imperative shell): the `NavigationExecutor` consumes `resolvedIntent`, performs the platform router call, and on success writes to `currentRoute`. `history` derives from confirmed `currentRoute` transitions, not from intent emission.
+
+This separation matters because navigation can fail: the platform router may reject a route, a guard may redirect, or an animation may be interrupted. `currentRoute` and `history` must reflect what *actually happened*, not what was *requested*.
+
+`RouteState` carries the confirmed route after the platform router has completed the transition. Downstream topologies can read it to know which screen is active without coupling to the navigation framework. `RouteTransition` (defined alongside the `NavIntent` ADT above) records the from/to pair for each confirmed navigation event, enabling analytics observation and back-stack reasoning.
+
+**Deep link startup ordering.** OS deep link delivery (Android `Intent`, iOS `openURL`, web initial URL) may arrive before the navigation topology has activated. The platform's navigation service adapter must buffer the initial OS intent and replay it after `NavigationTopics.intent` has an active subscriber. The recommended pattern: the navigation service activates as `APPLICATION_EAGER`, subscribes to `resolvedIntent`, and only then enables OS intent delivery. For platforms where delivery cannot be deferred, a `ReplayTopic(1)` for `NavigationTopics.intent` can absorb a one-event activation gap.
 
 #### The Navigation Topology
 
-The navigation topology sits between intent publication and effect execution. It applies cross-cutting navigation logic as pure transforms on the intent stream:
+The navigation topology sits between intent publication and effect execution. It applies cross-cutting navigation logic as pure transforms on the intent stream. The topology only handles Stage 1 (intent processing); Stage 2 (confirmed navigation) is the executor's responsibility.
 
 ```
 // Pseudocode
@@ -1520,8 +1626,10 @@ topology("navigation-core", scope = Scope.APPLICATION_EAGER) {
     val intents = read(NavigationTopics.intent)
     val auth    = read(AuthTopics.state)
 
-    // Guard: redirect unauthenticated users to login
-    val guarded = combine(intents, auth, ::applyAuthGuard)
+    // Guard: redirect unauthenticated users to login.
+    // withLatestFrom: emit only when a new intent arrives, using latest auth as context.
+    // combine/combineLatest would re-emit stale intents on every auth state change.
+    val guarded = intents.withLatestFrom(auth, ::applyAuthGuard)
 
     // Deep link resolution: convert raw URIs to typed routes
     val resolved = guarded.map(::resolveDeepLinks)
@@ -1529,108 +1637,149 @@ topology("navigation-core", scope = Scope.APPLICATION_EAGER) {
     // Write the resolved intent for the NavigationExecutor to consume
     write(NavigationTopics.resolvedIntent, resolved)
 
-    // Track route transitions for analytics and history
-    write(NavigationTopics.history, resolved.map(::toRouteTransition))
+    // History derives from confirmed transitions, not intent emission.
+    // The executor writes to currentRoute after the platform confirms navigation.
+    // History is derived here from currentRoute state changes.
+    val confirmedTransitions = read(NavigationTopics.currentRoute)
+        .pairwise()
+        .withLatestFrom(read(NavigationTopics.resolvedIntent), ::buildTransition)
+    write(NavigationTopics.history, confirmedTransitions)
 }
 
-// Pure function: testable without any navigation framework
+// Route access policy: maps routes to required access conditions.
+// Guards inspect the target route, not the intent itself.
+val routeAccessPolicy: Map<Route, RouteAccessRequirement> = mapOf(
+    CheckoutRoutes.payment     to RouteAccessRequirement.authenticated,
+    AdminRoutes.inventory      to RouteAccessRequirement.role(UserRole.Owner, UserRole.Manager),
+    AdminRoutes.staffManage    to RouteAccessRequirement.role(UserRole.Owner),
+)
+
+// Pure function: testable without any navigation framework.
+// Uses RouteAccessPolicy to determine auth requirements per route.
 fun applyAuthGuard(intent: NavIntent, auth: AuthState): NavIntent {
-    if (intent.requiresAuth && auth !is AuthState.Authenticated) {
-        return NavIntent.GoTo(AuthRoutes.login, args = mapOf("returnTo" to intent.route))
+    val requirement = routeAccessPolicy[intent.targetRoute()] ?: return intent
+    return when {
+        requirement == RouteAccessRequirement.authenticated
+            && auth !is AuthState.Authenticated ->
+            NavIntent.GoTo(AuthRoutes.login, args = mapOf("returnTo" to intent.targetRoute()))
+        requirement is RouteAccessRequirement.Role
+            && (auth as? AuthState.Authenticated)?.user?.role !in requirement.roles ->
+            NavIntent.GoTo(CommonRoutes.unauthorized, args = mapOf("attempted" to intent.targetRoute()))
+        else -> intent
     }
-    return intent
 }
+
+// Pure function: converts DeepLink URIs to typed intents.
+// After this transform, no DeepLink variants remain in the stream.
+fun resolveDeepLinks(intent: NavIntent): ResolvedNavIntent = when (intent) {
+    is NavIntent.DeepLink -> resolveUri(intent.uri)  // maps URI to GoTo/Replace with typed args
+    is NavIntent.GoTo     -> ResolvedNavIntent.GoTo(intent.route, intent.args)
+    is NavIntent.Replace  -> ResolvedNavIntent.Replace(intent.route, intent.args)
+    is NavIntent.Back     -> ResolvedNavIntent.Back
+    is NavIntent.ShowModal -> ResolvedNavIntent.ShowModal(intent.route, intent.args)
+    is NavIntent.DismissModal -> ResolvedNavIntent.DismissModal
+}
+
+// Pure function: builds a RouteTransition from confirmed currentRoute changes
+fun buildTransition(
+    routePair: Pair<RouteState, RouteState>,
+    intent: ResolvedNavIntent,
+): RouteTransition = RouteTransition(
+    from = routePair.first,
+    to = routePair.second,
+    intent = intent,
+    timestamp = DateTime.now(),  // the only impure element; injectable for tests
+)
 ```
 
 Auth guards, deep link resolution, onboarding flow gating, A/B test routing: all live in the navigation topology as pure transforms. They are testable by calling the transform functions directly with test inputs. No router framework, no platform lifecycle, no mocking.
 
-**Role-based access control.** The same guard mechanism generalizes beyond binary authentication to role-based screen authorization. In applications where different user roles have different screen access (e.g., a store owner can access inventory management, but a cashier cannot), the access policy is another pure transform in the navigation pipeline:
+**Role-based access control.** The `routeAccessPolicy` map generalizes beyond binary authentication to role-based screen authorization. In applications where different user roles have different screen access (e.g., a store owner can access inventory management, but a cashier cannot), the access policy is a data-driven lookup in the same `applyAuthGuard` function.
+
+Because the permission mapping can itself be modeled as a topic (`StateTopic<RouteAccessPolicy>`), the access policy becomes reactive. A server-pushed permission change or a runtime role switch (e.g., a store owner granting temporary elevated access to a cashier during a shift) propagates through the navigation topology automatically. To incorporate a reactive policy topic, wire it with `withLatestFrom`:
 
 ```
-// Route-level permission mapping
-val routePermissions: Map<Route, Set<UserRole>> = mapOf(
-    AdminRoutes.inventory     to setOf(UserRole.Owner, UserRole.Manager),
-    AdminRoutes.staffManage   to setOf(UserRole.Owner),
-    AdminRoutes.salesReport   to setOf(UserRole.Owner, UserRole.Manager),
-    CheckoutRoutes.cart       to setOf(UserRole.Owner, UserRole.Manager, UserRole.Cashier),
-)
-
-// Pure function: testable without any framework
-fun applyAccessControl(intent: NavIntent, auth: AuthState): NavIntent {
-    if (intent !is NavIntent.GoTo) return intent
-    val allowed = routePermissions[intent.route] ?: return intent  // no restriction registered
-    val role = (auth as? AuthState.Authenticated)?.user?.role ?: return NavIntent.GoTo(AuthRoutes.login)
-    if (role !in allowed) {
-        return NavIntent.GoTo(CommonRoutes.unauthorized, args = mapOf("attempted" to intent.route))
+// Reactive access policy
+val guarded = intents
+    .withLatestFrom(auth, ::Pair)
+    .withLatestFrom(read(NavigationTopics.accessPolicy)) { (intent, auth), policy ->
+        applyAuthGuard(intent, auth, policy)
     }
-    return intent
-}
 ```
 
-The navigation topology chains the access control guard after the auth guard:
+The guard function remains pure: it receives the current policy, the current auth state, and the intent as inputs, and produces the resolved intent as output. The reactivity is in the wiring, not in the function.
 
-```
-// In the navigation topology
-val guarded = combine(intents, auth, ::applyAuthGuard)
-val authorized = combine(guarded, auth, ::applyAccessControl)
-val resolved = authorized.map(::resolveDeepLinks)
-```
-
-Because the permission mapping can itself be modeled as a topic (`StateTopic<RoutePermissions>`), the access policy becomes reactive. A server-pushed permission change or a runtime role switch (e.g., a store owner granting temporary elevated access to a cashier during a shift) propagates through the navigation topology automatically. The guard function remains pure: it receives the current permissions and the current auth state as inputs, and produces the resolved intent as output. The reactivity is in the wiring, not in the function.
-
-This eliminates the common pattern of scattering role checks across individual pages (`if (currentUser.role != Role.Owner) return Unauthorized()`) or embedding them in fragile router middleware. The access policy is centralized, declarative, and testable: `applyAccessControl(NavIntent.GoTo(AdminRoutes.inventory), cashierAuth)` returns `NavIntent.GoTo(CommonRoutes.unauthorized)`. One function call, one assertion, no framework.
+This eliminates the common pattern of scattering role checks across individual pages (`if (currentUser.role != Role.Owner) return Unauthorized()`) or embedding them in fragile router middleware. The access policy is centralized, declarative, and testable: `applyAuthGuard(NavIntent.GoTo(AdminRoutes.inventory), cashierAuth, policy)` returns `NavIntent.GoTo(CommonRoutes.unauthorized)`. One function call, one assertion, no framework.
 
 #### The NavigationExecutor Boundary
 
-The `NavigationExecutor` is the shell-boundary adapter that performs the actual platform navigation call. It subscribes to the resolved intent topic and delegates to the platform's routing framework:
+The `NavigationExecutor` is the shell-boundary adapter that performs the actual platform navigation call. It subscribes to `NavigationTopics.resolvedIntent` and delegates to the platform's routing framework. After the platform confirms the transition, the executor writes to `NavigationTopics.currentRoute`. This is the Stage 2 contract: the executor is the sole writer to `currentRoute`.
 
 ```
 // Abstract contract (lives in nidana-navigation, platform-agnostic)
 abstract class NavigationExecutor {
-    abstract fun execute(intent: NavIntent)
+    abstract fun execute(intent: ResolvedNavIntent)
+    abstract fun observeRouteChanges(): Stream<RouteState>  // platform router feedback
 }
 
 // Concrete implementation (lives in nidana-runtime-flutter)
 class FlutterNavigationExecutor extends NavigationExecutor {
     final GoRouter _router;
+    final NidanaBus _bus;
+
+    FlutterNavigationExecutor(this._router, this._bus) {
+        // Subscribe to resolved intents
+        _bus.observe(NavigationTopics.resolvedIntent).listen(execute);
+        // Feed confirmed route changes back to the bus
+        observeRouteChanges().listen((routeState) {
+            _bus.publish(NavigationTopics.currentRoute, routeState);
+        });
+    }
 
     @override
-    void execute(NavIntent intent) {
+    void execute(ResolvedNavIntent intent) {
         switch (intent) {
-            case GoTo(route, args):  _router.go(route.path, extra: args);
+            case GoTo(route, args):    _router.go(route.path, extra: args);
             case Replace(route, args): _router.pushReplacement(route.path, extra: args);
-            case Back():             _router.pop();
-            case BackTo(route):      _router.popUntil(route.path);
-            case DeepLink(uri):      _router.go(uri.path); // already resolved by topology
+            case Back():               _router.pop();
             case ShowModal(route, args): _router.push(route.path, extra: args);
-            case DismissModal():     _router.pop();
+            case DismissModal():       _router.pop();
         }
+    }
+
+    @override
+    Stream<RouteState> observeRouteChanges() {
+        // GoRouter exposes a Listenable; convert to stream of RouteState
+        return _router.routerDelegate.currentConfiguration
+            .map((config) => RouteState.fromRouterConfig(config));
     }
 }
 ```
+
+The executor switch is exhaustive over `ResolvedNavIntent`, which excludes `DeepLink` (all deep links are resolved to typed intents by the navigation topology before reaching the executor).
 
 Each platform provides its own executor: `FlutterNavigationExecutor` (GoRouter, Navigator 2.0), `ComposeNavigationExecutor` (Navigation Component), `SwiftUINavigationExecutor` (NavigationStack), `ReactNavigationExecutor` (React Router). The navigation topology is identical across platforms. Only the executor differs.
 
 #### Navigation Result Handling
 
-Some navigation patterns expect a result from the destination screen (e.g., "pick a photo and return the selected image"). The stream model handles this without callbacks or `await Navigator.push`:
+Some navigation patterns expect a result from the destination screen (e.g., "pick a photo and return the selected image"). The stream model handles this through typed result topics, not through untyped payloads on the navigation intent:
 
 ```
 // Source page publishes intent
 bus.publish(NavigationTopics.intent, NavIntent.GoTo(MediaRoutes.photoPicker))
 
-// Destination page publishes result to a module-scoped topic before navigating back
+// Destination page publishes result to a typed, module-scoped topic before navigating back
 bus.publish(MediaTopics.pickerResult, PhotoPickResult.selected(photo))
 bus.publish(NavigationTopics.intent, NavIntent.Back)
 
-// Source page's topology reads the result topic
+// Source page's topology reads the typed result topic
 topology("profile-editor") {
     val pickerResult = read(MediaTopics.pickerResult)
     // ... react to the selected photo
 }
 ```
 
-The result topic should be module-scoped and cleaned up when the flow completes, preventing stale results from leaking across unrelated navigation sequences. The `correlationId` in the message envelope can link the original navigation intent to its result for traceability.
+The result flows through a typed `EventTopic<PhotoPickResult>`, preserving the architecture's typed-topic contract. The result topic is module-scoped and cleaned up when the source module scope exits, preventing stale results from leaking across unrelated navigation sequences. The `correlationId` in the message envelope links the original navigation intent to its result for traceability: the destination page's publish carries the same `correlationId` as the originating `GoTo` intent, and the source topology can match on it if multiple concurrent picker flows are possible.
 
 #### When Direct Navigation Is Acceptable
 
@@ -1695,7 +1844,7 @@ graph TB
 
 1. **Errors are values, not exceptions.** Use ADTs (sealed classes, enums with associated values) to model error states. A `Topic<Result<OrderResponse, OrderError>>` is self-describing.
 
-2. **Never let an error terminate a stream.** In Rx, an `onError` signal terminates the subscription. Topologies must catch errors at the transform level and convert them to error values on the output topic.
+2. **Never let an error terminate a stream.** In Rx, an `onError` signal terminates the subscription. The bus provides no automatic recovery: topology authors are solely responsible for preventing stream termination by applying `catchError`, `onErrorResumeNext`, or equivalent operators in their pipelines. This is a development discipline, not a runtime guarantee. If a pipeline does terminate due to an unhandled exception, the bus logs the failure in dev mode (see [§2.3](#23-bus-runtime)) but does not restart the pipeline.
 
 3. **Distinguish recoverable from fatal.** Recoverable errors (network timeout, validation failure) are routed to domain-specific topics and handled by retry logic or fallback states. Fatal errors (corrupt state, unrecoverable crash) are routed to `Topic<AppError>` for global handling.
 
@@ -1706,10 +1855,55 @@ graph TB
 | Approach | Mechanism | When To Use |
 |---|---|---|
 | **Result ADT** | `Topic<Result<T, E>>` carries success or error in the type | Domain-specific errors within a feature |
-| **Error topic** | Catch error, publish to `Topic<AppError>` | Cross-feature error reporting |
+| **Error topic** | Catch error, publish to `ErrorTopics.appError` | Cross-feature error reporting |
 | **Retry with backoff** | `retryWhen` operator in topology transform | Transient I/O failures |
 | **Fallback emission** | `onErrorResumeNext` / `catchError` emitting default state | UI must never show blank screen |
-| **Circuit breaker** | Topology tracks failure count, stops retrying after threshold | Prevent cascading failures |
+| **Circuit breaker** | `scan` accumulator over failure events; threshold check via `filter` | Prevent cascading failures |
+
+#### `AppError` Contract
+
+`AppError` is the cross-feature error type published to the global error topic. It provides enough structure for error routing and display without coupling to platform-specific exception types:
+
+```
+data class AppError(
+    val kind: ErrorKind,        // network, validation, authorization, internal, unknown
+    val message: String,
+    val correlationId: String,  // links back to the originating operation
+    val source: String,         // topology or service that caught the error
+    val recoverable: Boolean,
+    val cause: Throwable?,      // platform-specific; null in cross-platform contexts
+)
+
+enum class ErrorKind { Network, Validation, Authorization, Internal, Unknown }
+
+// Cross-cutting error topic
+abstract class ErrorTopics {
+    static final appError = EventTopic<AppError>("error.app")
+}
+```
+
+Services and topologies catch exceptions at the shell boundary or via `catchError` operators and publish structured `AppError` values. The error handling module (see [§8.1](#81-patterns-for-cross-cutting-concerns)) subscribes to `ErrorTopics.appError` and renders appropriate UI (toast, dialog, error page) based on `kind` and `recoverable`.
+
+#### Circuit Breaker as Stream State
+
+A circuit breaker expressed as mutable state inside the topology body would violate the pure-wiring constraint. Instead, model it as a `scan` accumulator over a failure-event stream. All state lives in the stream operator, not the topology body:
+
+```
+// Circuit breaker: stop retrying after 3 consecutive failures
+val failures = read(PaymentTopics.result)
+    .filter { it is Result.Failure }
+
+val circuitOpen = failures
+    .scan(0) { count, _ -> count + 1 }
+    .map { count -> count >= 3 }
+
+// Use circuitOpen to gate retry attempts
+val retryableRequests = read(PaymentTopics.request)
+    .withLatestFrom(circuitOpen) { request, open -> if (!open) request else null }
+    .filterNotNull()
+```
+
+A successful result resets the counter by folding successes into the same `scan`. The circuit breaker is a pure stream transformation, testable by publishing a sequence of `Result.Failure` and `Result.Success` values and asserting on the gating output.
 
 ## 10. Resilience Properties
 
@@ -2754,7 +2948,72 @@ Topologies and transformers are testable at multiple levels:
 
 **Level 4: UI / Page tests.** Because pages interact with the bus exclusively through typed topics, UI testing collapses to: inject a `TestBus`, synchronously publish values to input topics (e.g., `testBus.publish(AuthTopics.state, AuthState.authenticated(user))`), and assert the UI renders the expected output. User interactions are verified by asserting the correct event was published to the expected topic. No service mocking, no ViewModel stubbing, no lifecycle simulation required.
 
-Open question: should the library provide a `TestBus` or `TestTopologyBuilder` that simplifies Level 2 and Level 4 testing with built-in assertion helpers?
+#### TestBus Contract
+
+`TestBus` implements the production `NidanaBus` interface with the following additional guarantees:
+
+1. **Per-instance isolation.** Each `TestBus` instance has its own topic registry and subject storage. No global state. Parallel tests do not interfere.
+2. **Virtual scheduler.** Accepts a `VirtualScheduler` at construction for deterministic testing of time-dependent operators (`debounce`, `throttle`, `delay`, `retryWhen`).
+3. **Envelope recording.** Records all published envelopes in order, accessible via `testBus.recordedEnvelopes()` and filterable by topic.
+4. **Assertion helpers.** Provides `assertEmitted(topic, matcher)`, `assertNotEmitted(topic)`, and `assertEmittedInOrder(topic, matchers)` for concise topology output verification.
+
+```
+// Level 2 example: topology wiring test
+fun testCheckoutTopologyWiring() {
+    val bus = TestBus(scheduler = VirtualScheduler())
+
+    bus.activate(CheckoutTopology())
+
+    bus.publish(CheckoutTopics.cartItems, CartItems(listOf(testItem)))
+    bus.publish(AuthTopics.state, AuthState.authenticated(testUser))
+
+    bus.assertEmitted(CheckoutTopics.uiState) { state ->
+        state.canCheckout == true && state.items.size == 1
+    }
+}
+
+// Level 2 example: time-dependent operator
+fun testDebounceSearch() {
+    val scheduler = VirtualScheduler()
+    val bus = TestBus(scheduler = scheduler)
+
+    bus.activate(SearchTopology())
+
+    bus.publish(SearchTopics.query, "hel")
+    bus.publish(SearchTopics.query, "hell")
+    bus.publish(SearchTopics.query, "hello")
+
+    // No emission yet (debounce window not elapsed)
+    bus.assertNotEmitted(SearchTopics.results)
+
+    // Advance past debounce window
+    scheduler.advanceTimeBy(300.milliseconds)
+
+    // Only the last query triggers a search
+    bus.assertEmitted(SearchTopics.apiRequest) { it.query == "hello" }
+}
+```
+
+#### Scheduler Injection API
+
+The bus accepts a `SchedulerProvider` at construction. In production, this defaults to the platform's real-time scheduler. In tests, a `VirtualScheduler` replaces wall-clock time with controllable virtual time:
+
+```
+// Scheduler injection
+val config = BusConfig(
+    schedulerProvider = VirtualSchedulerProvider(virtualScheduler)
+)
+val bus = TestBus(config)
+
+// VirtualScheduler API
+interface VirtualScheduler {
+    fun advanceTimeBy(duration: Duration)   // advance virtual clock
+    fun advanceTimeTo(timestamp: DateTime)  // advance to specific point
+    fun triggerActions()                     // execute all pending actions at current time
+}
+```
+
+All time-dependent operators within topologies (`debounce`, `throttle`, `delay`, `retryWhen`, `timeout`) use the injected scheduler. This makes tests fully deterministic: no `sleep()` calls, no flaky timing, no race conditions.
 
 ### 17.2 DevTools and Observability
 
