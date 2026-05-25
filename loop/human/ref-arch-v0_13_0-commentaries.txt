@@ -1,0 +1,6 @@
+I have some notes, questions, and want clarifications.
+
+1. There is an interceptor mechanism (3.7) that cannot (and shouldn't) do side effect and mutate, or can it (like suggested there) publish? I wonder what is it good for, though? Isn't this dangerous at the hand of developers? And how to force it not to do unsafe things? Or is this mechanism mostly for the debugging, library internals and tools?
+2. About topic registry (section 4), I wonder if a topic `Topic<T>` is unique (e.g. there can be only one `StateTopic<CartItems>` in the bus)? So, one specific topic with a specific type can only be declared once in a particular module? 
+
+Do not update the document, just give me answers/explanations.
