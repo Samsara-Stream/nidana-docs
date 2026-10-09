@@ -1,0 +1,870 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Nidana Bus Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one column, 1120px max. Map view = verdict strip + clickable SVG atlas. Detail view = diagram + scored table. */
+:root {
+  --bg: #f4f6fb;
+  --surface: #ffffff;
+  --paper: #ffffff;
+  --fg: #1b2232;
+  --muted: #5b6578;
+  --line: #d6dce8;
+  --line-strong: #aab3c5;
+  --accent: #4f46e5;
+  --accent-soft: #e4e7fb;
+  --s0: #0f7f58; --s0-bg: #d8f2e6;   /* settled */
+  --s1: #0b6f9c; --s1-bg: #d9edf9;   /* polish */
+  --s2: #a1500a; --s2-bg: #fbe7c6;   /* decide */
+  --s3: #b42318; --s3-bg: #fbdcd8;   /* conflict */
+  --shell: #b26b00; --shell-bg: #fff4dc;
+  --substrate: #6d3fd3; --substrate-bg: #f4eefc;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --radius: 8px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e131d; --surface: #161c2a; --paper: #f4f6fb; --fg: #e6e9f2; --muted: #9aa4b8;
+    --line: #283144; --line-strong: #3b4761; --accent: #a5b4fc; --accent-soft: #262b55;
+    --s0: #4ade80; --s0-bg: #11311f; --s1: #67c8f5; --s1-bg: #0f2b3b;
+    --s2: #fbbf24; --s2-bg: #3a2a0d; --s3: #f87171; --s3-bg: #3b1515;
+    --shell: #f2b84b; --shell-bg: #2a2110; --substrate: #b79cf5; --substrate-bg: #221c36;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e131d; --surface: #161c2a; --paper: #f4f6fb; --fg: #e6e9f2; --muted: #9aa4b8;
+  --line: #283144; --line-strong: #3b4761; --accent: #a5b4fc; --accent-soft: #262b55;
+  --s0: #4ade80; --s0-bg: #11311f; --s1: #67c8f5; --s1-bg: #0f2b3b;
+  --s2: #fbbf24; --s2-bg: #3a2a0d; --s3: #f87171; --s3-bg: #3b1515;
+  --shell: #f2b84b; --shell-bg: #2a2110; --substrate: #b79cf5; --substrate-bg: #221c36;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg); color: var(--fg);
+  font-family: var(--font-body); font-size: 15px; line-height: 1.5;
+  padding-block: 0 48px; padding-inline: 20px;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+button { font: inherit; color: inherit; }
+.wrap { max-width: 1120px; margin: 0 auto; }
+header.top {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px 24px;
+  padding-block: 22px 14px; border-bottom: 1px solid var(--line);
+}
+header.top h1 { font-size: 20px; font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+header.top .ver { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted); }
+nav.tabs { margin-left: auto; display: flex; gap: 4px; }
+nav.tabs button {
+  background: none; border: 1px solid transparent; border-radius: 999px;
+  padding: 5px 12px; cursor: pointer; color: var(--muted); font-size: 13.5px;
+}
+nav.tabs button[aria-selected="true"] { background: var(--accent-soft); color: var(--fg); border-color: var(--line); }
+nav.tabs button:focus-visible, .region:focus-visible, .chip:focus-visible, .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.view { display: none; padding-block: 20px 0; }
+.view.active { display: block; }
+
+.verdict { display: grid; grid-template-columns: 1.6fr 1fr; gap: 20px; align-items: start; }
+@media (max-width: 760px) { .verdict { grid-template-columns: 1fr; } }
+.verdict p { margin: 0 0 8px; max-width: 62ch; }
+.verdict p.lead { font-size: 16.5px; font-weight: 500; }
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.tile { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; min-width: 0; }
+.tile .n { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.tile .l { font-size: 12px; color: var(--muted); margin-top: 2px; display: flex; align-items: center; gap: 6px; }
+.dot { width: 9px; height: 9px; border-radius: 2px; display: inline-block; flex: none; }
+.dot.s0 { background: var(--s0); } .dot.s1 { background: var(--s1); } .dot.s2 { background: var(--s2); } .dot.s3 { background: var(--s3); }
+.stack { display: flex; height: 8px; border-radius: 4px; overflow: hidden; gap: 2px; margin-top: 10px; background: var(--line); }
+.stack span { display: block; height: 100%; }
+.stack .s0 { background: var(--s0); } .stack .s1 { background: var(--s1); } .stack .s2 { background: var(--s2); } .stack .s3 { background: var(--s3); }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: 12.5px; color: var(--muted); margin-top: 10px; }
+.legend b { color: var(--fg); font-weight: 500; }
+
+figure.atlas { margin: 22px 0 0; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px; overflow-x: auto; }
+figure.atlas svg { display: block; width: 100%; height: auto; max-width: 100%; min-width: 720px; }
+figure.atlas figcaption { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+/* SVG atlas */
+.region { cursor: pointer; }
+.region rect.box { fill: var(--surface); stroke: var(--line-strong); stroke-width: 1.2; transition: stroke .15s, fill .15s; }
+.region:hover rect.box, .region:focus-visible rect.box { stroke: var(--accent); stroke-width: 1.8; }
+.region.kind-shell rect.box { fill: var(--shell-bg); stroke: var(--shell); }
+.region.kind-substrate rect.box { fill: var(--substrate-bg); stroke: var(--substrate); }
+.region.kind-lens rect.box { fill: var(--surface); }
+.region text { fill: var(--fg); font-family: var(--font-body); }
+.region text.title { font-size: 15px; font-weight: 600; }
+.region text.sub { font-size: 11.5px; fill: var(--muted); }
+.region text.count { font-size: 10.5px; fill: var(--muted); font-family: var(--font-mono); }
+.badge rect { rx: 10; }
+.badge text { font-size: 11px; font-weight: 600; font-family: var(--font-body); letter-spacing: .01em; }
+.badge.s0 rect { fill: var(--s0-bg); } .badge.s0 text { fill: var(--s0); }
+.badge.s1 rect { fill: var(--s1-bg); } .badge.s1 text { fill: var(--s1); }
+.badge.s2 rect { fill: var(--s2-bg); } .badge.s2 text { fill: var(--s2); }
+.badge.s3 rect { fill: var(--s3-bg); } .badge.s3 text { fill: var(--s3); }
+.bar rect.track { fill: var(--line); }
+.bar rect.s0 { fill: var(--s0); } .bar rect.s1 { fill: var(--s1); } .bar rect.s2 { fill: var(--s2); } .bar rect.s3 { fill: var(--s3); }
+.frame { fill: none; stroke: var(--substrate); stroke-dasharray: 6 5; stroke-width: 1.6; }
+.frame-label { fill: var(--substrate); font-size: 12.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; font-family: var(--font-body); }
+.edge { stroke: var(--line-strong); stroke-width: 1.4; fill: none; }
+.edge.dashed { stroke-dasharray: 5 4; }
+.edge-label { font-size: 11px; fill: var(--muted); font-family: var(--font-body); }
+.row-label { font-size: 11px; fill: var(--muted); font-family: var(--font-body); letter-spacing: .06em; text-transform: uppercase; }
+marker path { fill: var(--line-strong); }
+
+/* Detail view */
+.crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-size: 13.5px; color: var(--muted); }
+.btn { background: var(--surface); border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; cursor: pointer; font-size: 13px; }
+.btn:hover { border-color: var(--line-strong); }
+.detail-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 14px; }
+.detail-head h2 { margin: 0; font-size: 24px; font-weight: 600; letter-spacing: -0.01em; text-wrap: balance; }
+.chip { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 600; border: 1px solid transparent; white-space: nowrap; }
+.chip.s0 { background: var(--s0-bg); color: var(--s0); } .chip.s1 { background: var(--s1-bg); color: var(--s1); }
+.chip.s2 { background: var(--s2-bg); color: var(--s2); } .chip.s3 { background: var(--s3-bg); color: var(--s3); }
+.chip.f { background: var(--surface); color: var(--fg); border-color: var(--line); cursor: pointer; font-family: var(--font-mono); font-weight: 500; }
+.chip.f:hover { border-color: var(--accent); }
+.detail-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 20px; margin-top: 16px; align-items: start; }
+@media (max-width: 860px) { .detail-grid { grid-template-columns: 1fr; } }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; min-width: 0; }
+.card h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.card p { margin: 0 0 8px; max-width: 66ch; }
+.card .dist { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--muted); margin-top: 6px; }
+.card .dist b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
+.paper { background: var(--paper); color: #1e293b; border: 1px solid var(--line); border-radius: 10px; padding: 10px; overflow-x: auto; }
+.paper svg { max-width: 100%; height: auto; }
+.paper pre { margin: 0; font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap; color: #1e293b; }
+.paper .note { font-size: 12px; color: #475569; margin: 0 0 8px; }
+figcaption.cap { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+.findlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.findlist li { display: grid; grid-template-columns: auto 1fr; gap: 10px; align-items: start; }
+.findlist .t { font-weight: 500; }
+.findlist .fix { color: var(--muted); font-size: 13.5px; }
+table.sections { width: 100%; border-collapse: collapse; margin-top: 18px; font-size: 14px; }
+table.sections th { text-align: left; font-size: 12px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+table.sections td { padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.sections tr:last-child td { border-bottom: none; }
+table.sections td.sec { font-family: var(--font-mono); font-size: 12.5px; white-space: nowrap; color: var(--muted); }
+table.sections td.ttl a { color: var(--fg); font-weight: 500; }
+table.sections td.ttl a:hover { color: var(--accent); }
+table.sections td.ln { white-space: nowrap; }
+.ln button { font-family: var(--font-mono); font-size: 12px; background: none; border: 1px solid var(--line); border-radius: 6px; padding: 1px 7px; cursor: pointer; color: var(--muted); }
+.ln button:hover { border-color: var(--accent); color: var(--fg); }
+.ln button.copied { color: var(--s0); border-color: var(--s0); }
+table.sections td.verd { color: var(--fg); }
+table.sections td.verd .fref { font-family: var(--font-mono); font-size: 12px; color: var(--accent); cursor: pointer; margin-left: 6px; }
+.tablewrap { overflow-x: auto; }
+.pager { display: flex; justify-content: space-between; gap: 10px; margin-top: 22px; flex-wrap: wrap; }
+
+/* Findings view */
+.findings h2 { font-size: 22px; margin: 0 0 6px; font-weight: 600; }
+.findings p.intro { color: var(--muted); margin: 0 0 16px; max-width: 70ch; }
+.fcard { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 18px; margin-bottom: 10px; border-left: 4px solid var(--line-strong); }
+.fcard.s3 { border-left-color: var(--s3); } .fcard.s2 { border-left-color: var(--s2); } .fcard.s1 { border-left-color: var(--s1); }
+.fcard .h { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.fcard .id { font-family: var(--font-mono); font-weight: 500; color: var(--muted); }
+.fcard .h .t { font-weight: 600; }
+.fcard .body { margin: 8px 0 0; max-width: 78ch; }
+.fcard .fix { margin: 6px 0 0; color: var(--muted); max-width: 78ch; }
+.fcard .where { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.fcard .where .chip { font-weight: 500; }
+.fcard .where .chip.r { background: var(--accent-soft); color: var(--fg); cursor: pointer; }
+.fcard .where .chip.r:hover { text-decoration: underline; }
+h3.group { font-size: 13px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); margin: 22px 0 10px; }
+
+footer.foot { margin-top: 36px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; }
+footer.foot label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
+footer.foot select { font: inherit; font-size: 12.5px; background: var(--surface); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; }
+.sr { position: absolute; left: -9999px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header class="top">
+  <h1>Nidana Bus Map</h1>
+  <span class="ver">ref-arch v0.14.0 · reviewed 2026-10-09 · Fable 5.1</span>
+  <nav class="tabs" role="tablist" aria-label="Views">
+    <button role="tab" id="tab-map" aria-selected="true" data-view="map">Map</button>
+    <button role="tab" id="tab-findings" aria-selected="false" data-view="findings">Findings</button>
+  </nav>
+</header>
+
+<section id="view-map" class="view active" role="tabpanel" aria-labelledby="tab-map">
+  <div class="verdict">
+    <div>
+      <p class="lead">The core has converged. Five internal contradictions block an implementer. The document's scope needs a decision. The next version should be code, not prose.</p>
+      <p><b>Status, 2026-10-09:</b> every finding on this map has been decided and applied. v0.15.0 lives in <code>arch/</code> as three documents: Specification, Rationale and Positioning, Implementer's Guide. The scores here still describe v0.14.0, the version that was reviewed.</p>
+      <p>Click any area in the map to zoom in: each opens with its own diagram, the sections it covers, a score per section, and links into the source document. Scores answer one question: does this part still need you?</p>
+      <div class="legend">
+        <span><i class="dot s0"></i> <b>Settled</b> nothing to do</span>
+        <span><i class="dot s1"></i> <b>Polish</b> editorial only</span>
+        <span><i class="dot s2"></i> <b>Decide</b> a design choice is yours</span>
+        <span><i class="dot s3"></i> <b>Conflict</b> contradiction or unsupported claim</span>
+      </div>
+    </div>
+    <div>
+      <div class="tiles" id="tiles"></div>
+      <div class="stack" id="stack" aria-hidden="true"></div>
+      <div class="legend" id="stack-note"></div>
+    </div>
+  </div>
+
+  <figure class="atlas">
+    <svg id="atlas" viewBox="0 0 1000 730" role="img" aria-label="Bird's-eye map of the Nidana Bus architecture: upper shell of services above a pure substrate holding topics, topologies, the bus runtime and observers, with lifecycle scopes alongside and a lower shell of pages below; six cross-cutting lenses underneath. Each area carries a review score."></svg>
+    <figcaption>Services and pages sit at the edges and touch the substrate only through topics. Topologies are inert declarations the bus activates; lifecycle scopes decide when. Observers hang off the runtime's dispatch path and cannot publish. The row beneath holds the concerns that cut across the layers.</figcaption>
+  </figure>
+</section>
+
+<section id="view-detail" class="view" aria-live="polite"></section>
+
+<section id="view-findings" class="view findings" role="tabpanel" aria-labelledby="tab-findings"></section>
+
+<footer class="foot">
+  <span>Section links point into <code>arch/nidana-bus-ref-arch-v0_14_0.md</code>. Anchors resolve in GitHub or VS Code preview; line chips copy <code>path:line</code> for your editor.</span>
+  <label>Open links in <select id="linkmode"><option value="md">Markdown file</option><option value="vscode">VS Code at line</option></select></label>
+  <span>Companion to <code>loop/ai/ref-arch-v0_14-review-fable-5_1.md</code>.</span>
+</footer>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.9.1/mermaid.min.js"></script>
+<script>
+(function () {
+'use strict';
+
+/* ---------- model ---------- */
+var LEVELS = ['Settled', 'Polish', 'Decide', 'Conflict'];
+var DOC_REL = '../../arch/nidana-bus-ref-arch-v0_14_0.md';
+var DOC_ABS = '/Users/mohamad.purbo/git/nidana-docs/arch/nidana-bus-ref-arch-v0_14_0.md';
+var DOC_SHORT = 'arch/nidana-bus-ref-arch-v0_14_0.md';
+var MM_INIT = "%%{init:{'theme':'base','themeVariables':{'primaryTextColor':'#1e293b','lineColor':'#475569','edgeLabelBackground':'#ffffff','tertiaryTextColor':'#1e293b'}}}%%\n";
+
+/* s(sec, title, anchor, line, score, verdict, findings[]) */
+function s(sec, title, anchor, line, score, verdict, f) {
+  return { sec: sec, title: title, anchor: anchor, line: line, score: score, verdict: verdict, f: f || [] };
+}
+
+var FINDINGS = [
+  { id: 'F1', sev: 3, title: 'Single-writer counts topology writes only; the document\'s own shell code writes auth.state from three places',
+    body: '§3.11 enforces "exactly one writing topology per StateTopic" by AST scan over topology bodies plus runtime first-claim. Imperative publishes from shells are not counted. PersistenceService (§2.5), FirebaseAuthService (§18.3) and LegacyAuthBridge (§20.2) all publish auth.state, and Appendix B draws Auth Service, Persistence Service and auth-core on the same topic. The "races eliminated by construction" row in §11.1 rests on single-writer, so it does not hold for the recommended hydration pattern.',
+    fix: 'Shell publishers claim writes (bus.publisher(source, writes: [...]) participates in first-claim and the CI scan), and hydration publishes an event into the owning reducer instead of writing the StateTopic directly.',
+    status: 'Decided 2026-10-09: one owner per StateTopic, topology or claimed shell publisher; everything else publishes events named by intent. Applied in arch/nidana-bus-ref-arch-v0_14_1.md.',
+    regions: ['shell-upper', 'runtime', 'topics', 'errors', 'positioning'] },
+  { id: 'F2', sev: 3, title: 'Topics have no scope, but §7.1, §7.2 and §9.4 treat them as scoped',
+    body: '§7.4 and §7.5 say topics live until removeTopic; only topologies have scopes. The §7.1 diagram nests topics inside Module and Page scopes, §7.2 speaks of an "APPLICATION-scoped state topic", and §9.4 says a result topic is "module-scoped and cleaned up when its scope exits". The D.1 scope-violation lint inherits the confusion.',
+    fix: 'Keep topics unscoped. Restate the lint as "a topology must not write a StateTopic whose owning topology has a longer scope" and delete the stale-result sentence in §9.4.',
+    status: 'Decided 2026-10-09, option (b): topics stay unscoped; the lint is scope compatibility (owner scope at least as long as every reader). Applied in v0.15.0.',
+    regions: ['lifecycle', 'navigation', 'tooling'] },
+  { id: 'F3', sev: 3, title: 'APPLICATION_LAZY has no activation mechanism; the meta-topology workaround violates §6.1',
+    body: '§7.1 activates lazy topologies "on first read or write to a topic the topology handles" but never specifies registration, how the bus knows the topic set before activation, or what happens when the trigger is a publish to an EventTopic (the event is lost). Open since the v0.10 review (C-3). The conditional-activation paragraph has a topology activating other topologies, which is an effect inside a topology body.',
+    fix: 'Specify register(topology) with an activate-then-deliver rule for EventTopic triggers, or drop APPLICATION_LAZY from v1 and let services defer expensive work behind a StateTopic.',
+    status: 'Decided 2026-10-09: APPLICATION_LAZY dropped; deferred initialization documented as an eager-subscribe, lazy-load shell pattern behind a readiness StateTopic. Applied in v0.15.0.',
+    regions: ['lifecycle'] },
+  { id: 'F4', sev: 3, title: 'Correlation threading through a page\'s imperative publish is asserted, not specified',
+    body: '§9.4 result handling claims the destination page\'s publish "carries the same correlationId as the originating GoTo intent (the bus threads this)". A page publish is a shell root publish; §3.5 threads correlation inside pipelines, not through a platform router and back into a page.',
+    fix: 'Add publisher.publish(topic, value, causedBy: envelope) to §2.4 and show how the page obtains the envelope, or delete the sentence.',
+    status: 'Decided 2026-10-09: claim deleted; results match on a request id in the payload. Applied in v0.15.0.',
+    regions: ['navigation', 'shell-upper'] },
+  { id: 'F5', sev: 3, title: 'Formal claims overreach: activation-order independence and determinism',
+    body: '§12.1 says activation order does not change the data-flow result; §7.4 says events before subscription are lost, so this is false for EventTopic and for lazy scope. §12.2 excludes time operators from determinism but not switchMap into effectful service streams (§6.3), which is the main way services enter topologies.',
+    fix: 'Scope §12.1 to StateTopic-only graphs. Scope §12.2 to pure transformers, non-time operators and inputs that arrive on topics.',
+    status: 'Decided 2026-10-09: claims scoped; bus.start() startup barrier added (Spec §3.13). Applied in v0.15.0.',
+    regions: ['topologies', 'positioning'] },
+  { id: 'F6', sev: 1, title: 'Platform facts under a normative heading need verification',
+    body: '§3.3 says RxDart subjects deliver synchronously; they are sync: false by default. §3.3 and §15.5 treat MutableStateFlow as an ordering problem; it also conflates (drops intermediate values), which dedup masks for StateTopic but not for a MutableSharedFlow-backed ReplayTopic with slow collectors.',
+    fix: 'One sentence each. Verify every row of §15.5 against the library you pick for the Dart build.',
+    status: 'Decided 2026-10-09: fixed in the sentence (sync: true; StateFlow conflation; SharedFlow buffer). Applied in v0.15.0.',
+    regions: ['runtime', 'platforms'] },
+  { id: 'F7', sev: 2, title: 'Document scope: four platforms, seven layers, "shipped v1" labels, and zero code',
+    body: '§15, §16, Appendix C and Appendix D specify the output of a platform company. D.2 says "shipped v1" for tooling that does not exist. The Dart spec in loop/ai/spec targets v0.10.2 and is four versions stale.',
+    fix: 'v1 is Dart. Move §15, §16, Appendix C and D into an informative implementer\'s guide and label them unvalidated. Split the document (review, commentary 6).',
+    status: 'Decided 2026-10-09: v1 is Dart only; other platforms are unvalidated design targets; document split into Specification, Rationale, Implementer\'s Guide. Applied in v0.15.0.',
+    regions: ['shell-lower', 'platforms', 'tooling', 'positioning'] },
+  { id: 'F8', sev: 2, title: 'TypeScript dedup default silently diverges from the other platforms',
+    body: '§3.12 makes StateTopic dedup default-on, with TypeScript using reference equality unless equals is supplied. Transformers return fresh immutable objects every emission, so on TypeScript dedup never fires by default while on Kotlin, Dart and Swift it does. The same topology rerenders on one platform and not the others.',
+    fix: 'Require equals on every TypeScript StateTopic (lint), or make structural equality the default and accept the cost.',
+    status: 'Decided 2026-10-09: equals required by the TypeScript factory type; codegen emits it. Applied in v0.15.0.',
+    regions: ['runtime', 'platforms'] },
+  { id: 'E1', sev: 1, title: 'References to earlier drafts and versions (commentary 4)', body: 'Six sites: L792, L1518, L1891, L2007, L2230, L3462. Keep the rationale ("auto-cleanup is rejected because..."), drop the history.', fix: '', regions: ['topics', 'lifecycle', 'navigation', 'positioning'] },
+  { id: 'E2', sev: 1, title: 'Unlinked "Appendix C/D" mentions (commentary 5)', body: 'Eleven sites: L722, L748, L1281, L1334, L1549, L1774, L2052, L2403, L2735, L3041, L3369.', fix: '', regions: ['runtime', 'topologies', 'tooling'] },
+  { id: 'E3', sev: 1, title: 'Two DSL styles: topology("...") { } (14 uses) vs class with declare() (8 uses)', body: 'The class form is what §15.3 shows per platform. Pick it everywhere or state that topology() is sugar.', fix: '', regions: ['topologies', 'platforms'] },
+  { id: 'E4', sev: 1, title: '"load-bearing" at L1658', body: 'Your banned word, in §8.5.', fix: '', regions: ['contracts'] },
+  { id: 'E5', sev: 1, title: '§9.3 points to §19.6 "on retention"; §19.6 is internationalization', body: 'Dead pointer at L1776.', fix: '', regions: ['observation', 'platforms'] },
+  { id: 'E6', sev: 1, title: '§6.2 promises a "wrapping topology pattern" for envelope-aware transformers and never shows it (commentary 3)', body: 'Delete the sentence at L1188; tracing inside a transform is the observer seam\'s job.', fix: '', regions: ['topologies'] },
+  { id: 'E7', sev: 1, title: '§10.3 circuit breaker: prose says successes reset the counter; the code never does', body: 'L2151 to L2168. The scan folds failures only.', fix: '', regions: ['errors'] },
+  { id: 'E8', sev: 1, title: '§17 omits the closest relatives', body: 'Kafka Streams (Topology.describe() is the same static-graph idea), Cycle.js, redux-observable / NgRx Effects, Square Workflow.', fix: '', regions: ['positioning'] }
+];
+
+var REGIONS = [
+  { id: 'shell-upper', kind: 'shell', name: 'Upper Shell', sub: 'Services, executors, bridges · I/O effects',
+    box: { x: 40, y: 24, w: 800, h: 96 },
+    summary: 'Services wrap I/O and publish results; executors perform platform effects; bridges connect legacy code during migration. The layer is described correctly. What it omits is that these components write StateTopics imperatively, and the single-writer rule never sees them.',
+    diagram: 'flowchart LR\n  subgraph shell ["Upper shell (I/O effects)"]\n    SVC["Service<br/>network · disk · sensors · SDK"]\n    EXEC["Executor<br/>navigation, platform calls"]\n    BR["Bridge<br/>legacy ↔ bus (migration)"]\n  end\n  PUB["bus.publisher(source)"]\n  T(["StateTopic<br/>e.g. auth.state"])\n  TOPO["Topology<br/>defined by the service,<br/>activated by the bus"]\n  SVC -- "publishes via" --> PUB\n  EXEC -- "publishes via" --> PUB\n  BR -- "publishes via" --> PUB\n  PUB -- "write: not counted by single-writer (F1)" --> T\n  T -- "observe" --> SVC\n  SVC -. "defines" .-> TOPO\n  TOPO -- "read / write (counted)" --> T\n  style shell fill:none,stroke:#d97706,stroke-dasharray: 5 5,stroke-width:2px,color:#d97706\n  style SVC fill:#fef3c7,stroke:#d97706,color:#1e293b\n  style EXEC fill:#fef3c7,stroke:#d97706,color:#1e293b\n  style BR fill:#fef3c7,stroke:#d97706,color:#1e293b\n  style PUB fill:#f3e8ff,stroke:#7c3aed,color:#1e293b\n  style T fill:#e0e7ff,stroke:#4f46e5,color:#1e293b\n  style TOPO fill:#f3e8ff,stroke:#7c3aed,color:#1e293b',
+    caption: 'Two paths write the same topic. The topology path is counted by single-writer; the publisher path is not. That gap is F1.',
+    sections: [
+      s('§5.2', 'Symmetry of services and pages', '#52-symmetry-of-services-and-pages', 1061, 0, 'Clean statement. Nothing to add.'),
+      s('§5.4', 'Upper shell: services', '#54-upper-shell-services', 1086, 0, 'Correct as far as it goes; see F1 for what it leaves out.'),
+      s('§2.4', 'Publishing context for shell-boundary code', '#publishing-context-for-shell-boundary-code', 396, 2, 'bus.publisher(source) exists; it should also declare the topics it writes.', ['F1', 'F4']),
+      s('§2.5', 'The persistence pattern', '#the-persistence-pattern', 470, 3, 'PersistenceService writes auth.state, a StateTopic another topology owns.', ['F1']),
+      s('§9.1', 'Patterns for cross-cutting concerns', '#91-patterns-for-cross-cutting-concerns', 1676, 0, 'Good table; location and OS permissions are now in it.'),
+      s('§9.4', 'NavigationExecutor (shell side)', '#the-two-topology-navigation-model', 1963, 1, 'Imperative shell writer of nav.current-route. Fine once shell publishers claim writes.', ['F1']),
+      s('§18.3', 'Non-reactive third-party SDKs', '#183-non-reactive-third-party-sdks', 2907, 3, 'FirebaseAuthService publishes auth.state from the shell.', ['F1']),
+      s('§20.2', 'Strangler fig and bridges', '#202-strangler-fig-and-parallel-architecture-coexistence', 3182, 3, 'LegacyAuthBridge is a third writer of auth.state.', ['F1'])
+    ] },
+  { id: 'topics', kind: 'substrate', name: 'Topics, Envelopes & Registry', sub: 'Typed keys · lineage · initialization · §2, §4',
+    box: { x: 60, y: 188, w: 310, h: 130 },
+    summary: 'A topic is a pure typed key (name, type); the bus owns the subject and creates it on first access. Every value travels inside one envelope whose lineage rules are fully specified. The registry is typed, hierarchical and generated at scale. This is the most converged part of the document.',
+    diagram: 'flowchart LR\n  REG["Registry class<br/>AuthTopics.state"]\n  KEY["Topic&lt;T&gt; = (name, type)<br/>pure key, shared across buses"]\n  INIT["initial value<br/>pure constant or factory,<br/>Initializing variant when hydrated"]\n  SUBJ["Backing subject<br/>per bus instance,<br/>created on first access"]\n  ENV["MessageEnvelope&lt;T&gt;<br/>id · correlationId · causationId<br/>parentCorrelationIds · source · sensitive"]\n  subgraph variants ["Variants"]\n    ST["StateTopic<br/>latest value, dedup, single-writer"]\n    ET["EventTopic<br/>no replay, multi-writer"]\n    RT["ReplayTopic(N)<br/>buffer, multi-writer"]\n  end\n  REG --> KEY\n  KEY -- "first read · write · publish · getCurrentValue" --> SUBJ\n  INIT -- "seeds StateTopic" --> SUBJ\n  SUBJ -- "carries" --> ENV\n  KEY --- variants\n  style variants fill:none,stroke:#2563eb,stroke-dasharray: 5 5,stroke-width:2px,color:#2563eb\n  style REG fill:#dbeafe,stroke:#2563eb,color:#1e293b\n  style KEY fill:#e0e7ff,stroke:#4f46e5,color:#1e293b\n  style INIT fill:#f3e8ff,stroke:#7c3aed,color:#1e293b\n  style SUBJ fill:#f3e8ff,stroke:#7c3aed,color:#1e293b\n  style ENV fill:#d1fae5,stroke:#059669,color:#1e293b\n  style ST fill:#e0e7ff,stroke:#4f46e5,color:#1e293b\n  style ET fill:#e0e7ff,stroke:#4f46e5,color:#1e293b\n  style RT fill:#e0e7ff,stroke:#4f46e5,color:#1e293b',
+    caption: 'Declaration creates nothing. The subject appears on first runtime access and lives until removeTopic or bus shutdown.',
+    sections: [
+      s('§2.1', 'Topic and topic variants', '#21-topic', 254, 0, 'Identity (name, type), three variants, write-contention rules per variant.'),
+      s('§2.4', 'Message envelope, correlation vs causation, lineage', '#24-message-envelope', 320, 0, 'Lineage rules for combine and withLatestFrom closed the v0.10 gap.'),
+      s('§2.5', 'Who creates topics · getCurrentValue() · initial values', '#25-topic-initialization', 408, 0, 'Declaration never creates subjects; getCurrentValue is always defined and never throws.'),
+      s('§2.5', 'The persistence pattern', '#the-persistence-pattern', 470, 3, 'Shell service writes a StateTopic owned by a topology.', ['F1']),
+      s('§4.1', 'The problem with string-based topics', '#41-the-problem-with-string-based-topics', 800, 0, 'Motivates typed references. Fine.'),
+      s('§4.2', 'Topic as first-class typed reference', '#42-topic-as-first-class-typed-reference', 809, 1, 'Shared registry and module-local topology in one block (commentary 1).'),
+      s('§4.3', 'Topic name uniqueness', '#43-topic-name-uniqueness', 852, 0, 'Three enforcement levels; CI mandatory. Right.'),
+      s('§4.4', 'Topic registry organization', '#44-topic-registry-organization', 864, 0, 'Naming pattern and governance table.'),
+      s('§4.5', 'Code generation requirement at scale', '#45-code-generation-requirement-at-scale', 896, 0, 'Required above five engineers; reasonable threshold.'),
+      s('§4.6', 'Topology identity', '#46-topology-identity', 931, 0, 'Module-local identity. Good v0.14 addition.'),
+      s('§7.5', 'Topic cleanup', '#75-topic-cleanup', 1506, 1, 'Rule is right; drop the "earlier drafts" framing.', ['E1']),
+      s('§19.10', 'Dynamic and per-entity topics', '#1910-dynamic-and-per-entity-topics', 3142, 2, 'Topic factory punted to a future package. Per-entity state is common in your domain; decide for v1.')
+    ] },
+  { id: 'topologies', kind: 'substrate', name: 'Topologies & Composition', sub: 'declare() → IR → graph or activation · §2.2, §5, §6, §12.1',
+    box: { x: 450, y: 188, w: 370, h: 130 },
+    summary: 'A topology is recorded, not run: declare() captures reads, writes and transforms into a TopologyDefinition that the bus interprets on activation and that tooling renders as a graph. Transformers are named pure functions on payloads. This chain is the strongest idea in the document. The open items are enforcement of body purity and two formal claims that overreach.',
+    diagram: 'flowchart LR\n  DECL["declare()<br/>read · combine · map · scan · write"]\n  RB["RecordingBuilder<br/>no subjects, no subscriptions"]\n  IR["TopologyDefinition (IR)<br/>reads · writes · transforms · scope"]\n  GRAPH["toGraph()<br/>Mermaid · DOT · JSON · CI lints"]\n  ACT["bus.activate()<br/>live subscriptions, first-claim, cycle check"]\n  FN["Transformer<br/>pure (A, B) → C on payloads"]\n  EFF["Service stream factory<br/>switchMap(query → api)"]\n  DECL --> RB --> IR\n  IR --> GRAPH\n  IR --> ACT\n  FN -. "FunctionRef" .-> IR\n  ACT -- "payload in, envelope out" --> FN\n  EFF -. "invisible to IR (§6.3, F5)" .-> ACT\n  style DECL fill:#f3e8ff,stroke:#7c3aed,color:#1e293b\n  style RB fill:#f3e8ff,stroke:#7c3aed,color:#1e293b\n  style IR fill:#e0e7ff,stroke:#4f46e5,color:#1e293b\n  style GRAPH fill:#d1fae5,stroke:#059669,color:#1e293b\n  style ACT fill:#f3e8ff,stroke:#7c3aed,color:#1e293b\n  style FN fill:#dbeafe,stroke:#2563eb,color:#1e293b\n  style EFF fill:#fef3c7,stroke:#d97706,color:#1e293b',
+    caption: 'One IR feeds both the running system and the static graph, so they cannot disagree. Effectful inner streams are the one input the IR does not see.',
+    sections: [
+      s('§2.2', 'Topology', '#22-topology', 283, 0, 'Local declaration, no global graph, pure. Settled.'),
+      s('§5.1', 'Layer diagram', '#51-layer-diagram', 972, 1, 'Diagram fine; code uses topology() while prose says declare().', ['E3']),
+      s('§5.3', 'What lives where', '#53-what-lives-where', 1072, 0, 'Honest definition of "pure substrate". Keep it.'),
+      s('§5.5', 'Pure substrate: Nidana Bus', '#55-pure-substrate-nidana-bus', 1097, 0, 'Lists the substrate contents. Fine.'),
+      s('§6.1', 'Topology declaration API', '#61-topology-declaration-api', 1135, 2, 'Body restrictions are discipline. read() could return an opaque handle to remove the main temptation (commentary 2).'),
+      s('§6.2', 'Transformer design', '#62-transformer-design', 1158, 1, 'Dangling "wrapping topology pattern" sentence (commentary 3).', ['E6']),
+      s('§6.3', 'Reactive combinators and effectful sources', '#63-reactive-combinators', 1190, 2, 'switchMap into service streams leaves the IR incomplete and weakens §12.2. Decide whether stream factories are declared in the IR.', ['F5']),
+      s('§6.4', 'The sequencer anti-pattern', '#64-topology-misuse-the-sequencer-anti-pattern', 1221, 0, 'Clear heuristic, right fix (state machine via scan).'),
+      s('§6.5', 'Topology as self-documenting data', '#65-topology-as-self-documenting-data', 1283, 0, 'The strongest idea in the document.'),
+      s('§12.1', 'Compositional algebra', '#121-compositional-algebra', 2232, 3, 'Activation-order independence is false for EventTopic and lazy scope.', ['F5']),
+      s('§12.2', 'Determinism', '#122-determinism', 2244, 1, 'Scope the claim to pure transformers, non-time operators and topic inputs.', ['F5'])
+    ] },
+  { id: 'runtime', kind: 'substrate', name: 'Bus Runtime Contract', sub: 'Normative · ordering · reentrancy · envelopes · cycles · single-writer · dedup · §3',
+    box: { x: 60, y: 348, w: 460, h: 108 },
+    summary: 'Twelve rules every implementation must satisfy. Eleven of them are settled and precise. The twelfth, single-writer ownership, is sound for topologies and silent about shell publishes, which is where the document\'s own examples write.',
+    diagram: 'flowchart TB\n  PUB["publish(topic, value)<br/>from topology or publisher"]\n  ENV["wrap in MessageEnvelope<br/>lineage rules §2.4"]\n  DISP["per-topic dispatcher<br/>serial, publication order"]\n  OBS["observers (sync, in order)<br/>capability-gated, cannot publish"]\n  SUBS["subscribers and topologies"]\n  REENT{"publish inside a callback?"}\n  NEXT["defer to next tick<br/>microtask · dispatcher.launch · queue"]\n  ACT["activate(topology)<br/>idempotent on id · first-claim writer · SCC cycle check"]\n  PUB --> ENV --> DISP --> OBS --> SUBS --> REENT\n  REENT -- "yes" --> NEXT --> DISP\n  style PUB fill:#e0e7ff,stroke:#4f46e5,color:#1e293b\n  style ENV fill:#f3e8ff,stroke:#7c3aed,color:#1e293b\n  style DISP fill:#f3e8ff,stroke:#7c3aed,color:#1e293b\n  style OBS fill:#fee2e2,stroke:#dc2626,color:#1e293b\n  style SUBS fill:#dbeafe,stroke:#2563eb,color:#1e293b\n  style REENT fill:#fef3c7,stroke:#d97706,color:#1e293b\n  style NEXT fill:#f3e8ff,stroke:#7c3aed,color:#1e293b\n  style ACT fill:#d1fae5,stroke:#059669,color:#1e293b',
+    caption: 'The publish path: envelope, serial dispatcher, observers before subscribers, reentrant publishes deferred one tick. Activation runs the structural checks.',
+    sections: [
+      s('§3.1', 'Bus identity and coordination domain', '#31-bus-identity-and-coordination-domain', 512, 0, 'One bus per domain, explicit reference, no global accessor.'),
+      s('§3.2', 'Subject lifecycle', '#32-subject-lifecycle', 530, 0, 'Lazy creation, no auto-GC, explicit removeTopic.'),
+      s('§3.3', 'Ordering guarantees', '#33-ordering-guarantees', 543, 1, 'RxDart subjects are async unless sync: true; StateFlow conflates. Reword.', ['F6']),
+      s('§3.4', 'Reentrant publish normalization', '#34-reentrant-publish-normalization', 557, 0, 'Mandatory, per engine, with dev-mode depth diagnostic.'),
+      s('§3.5', 'Envelope metadata propagation', '#35-envelope-metadata-propagation', 574, 0, 'Single carrier object; payload extracted before transformers.'),
+      s('§3.6', 'Scheduler and dispatcher contract', '#36-scheduler-and-dispatcher-contract', 650, 0, 'SchedulerProvider plus per-topic dispatcher defaults.'),
+      s('§3.7', 'Observer execution model', '#37-observer-execution-model', 680, 0, 'ObserveContext without a Bus reference is the right capability design.'),
+      s('§3.8', 'Cycle detection', '#38-cycle-detection', 715, 0, 'Inter-topology forbidden; intra-topology only via a state-bearing operator.', ['E2']),
+      s('§3.9', 'Activation idempotency', '#39-activation-idempotency', 724, 0, 'Same id, same handle; different declaration throws.'),
+      s('§3.10', 'Thread safety', '#310-thread-safety', 732, 0, 'Atomicity of publish, subscribe, removeTopic stated.'),
+      s('§3.11', 'Single-writer ownership', '#311-single-writer-ownership', 744, 3, 'Counts topology writes only; shell publishes bypass it.', ['F1', 'E2']),
+      s('§3.12', 'StateTopic deduplication', '#312-statetopic-deduplication', 766, 2, 'TypeScript defaults to reference equality, so dedup never fires there on fresh immutable values. Decide.', ['F8'])
+    ] },
+  { id: 'observation', kind: 'substrate', name: 'Observers & Sensitive Data', label: 'Observers', sub: 'Publish-free · gated · §3.7, §9.2, §9.3',
+    box: { x: 570, y: 348, w: 250, h: 108 },
+    summary: 'Observers see every envelope they have capability for and cannot publish because the interface gives them no Bus. Sensitive topics are filtered at dispatch, redacted in tooling, and excluded from auto-persistence. The v0.14 rename from Interceptor to Observer removed the last escape hatch. Settled.',
+    diagram: 'flowchart LR\n  T(["Topic publish<br/>envelope.sensitive?"])\n  GATE{"observer has<br/>OBSERVE_SENSITIVE?"}\n  OBS["BusObserver.onPublish<br/>(topic, envelope, ctx)"]\n  CTX["ObserveContext<br/>log · metric · span<br/>no Bus, no publish"]\n  SINK["External sinks<br/>OTel · logs · devtools · TestBus recorder"]\n  DROP["not delivered"]\n  T -- "non-sensitive" --> OBS\n  T -- "sensitive" --> GATE\n  GATE -- "yes" --> OBS\n  GATE -- "no" --> DROP\n  OBS --> CTX --> SINK\n  style T fill:#e0e7ff,stroke:#4f46e5,color:#1e293b\n  style GATE fill:#fef3c7,stroke:#d97706,color:#1e293b\n  style OBS fill:#fee2e2,stroke:#dc2626,color:#1e293b\n  style CTX fill:#f3e8ff,stroke:#7c3aed,color:#1e293b\n  style SINK fill:#d1fae5,stroke:#059669,color:#1e293b\n  style DROP fill:#fee2e2,stroke:#dc2626,color:#1e293b',
+    caption: 'Observation is one-way by construction: the context exposes sinks only. Sensitivity is a property of the topic, filtered before delivery.',
+    sections: [
+      s('§3.7', 'Observer execution model', '#37-observer-execution-model', 680, 0, 'Mechanically incapable of publishing. Settled.'),
+      s('§9.2', 'Envelope observation', '#92-envelope-observation', 1690, 0, 'Observers for production, audit topic for devtools. Right call.'),
+      s('§9.3', 'Sensitive data handling', '#93-sensitive-data-handling', 1731, 1, 'Three consequences are clear; the pointer to §19.6 "on retention" is dead.', ['E5']),
+      s('§19.5', 'Production observability', '#195-production-observability', 3060, 0, 'OTel mapping, sampling observer, compliance seam.')
+    ] },
+  { id: 'lifecycle', kind: 'substrate', name: 'Lifecycle & Scopes', sub: '4 scopes · ref-counted module scope · §7', layout: 'tall',
+    box: { x: 864, y: 150, w: 112, h: 330 },
+    summary: 'Four scopes decide when a topology lives. Module scope (reference count plus grace period) and the topic-vs-topology lifecycle split are the best-engineered parts of the document. Two things are broken: topics are drawn and described as scoped though they have no scope, and lazy scope has no activation mechanism.',
+    diagram: 'flowchart TB\n  subgraph app ["APPLICATION scope: coordination-domain lifetime"]\n    EAGER["APPLICATION_EAGER<br/>activate at startup<br/>auth-core, nav-resolver"]\n    LAZY["APPLICATION_LAZY<br/>activate on first use<br/>mechanism undefined (F3)"]\n    subgraph mod ["MODULE scope: route subtree, ref-count + 100ms grace"]\n      MT["checkout-flow"]\n      subgraph page ["PAGE scope: mount → unmount"]\n        PT["payment-form"]\n      end\n    end\n  end\n  TOPIC(["Topics: no scope.<br/>Live until removeTopic (§7.4).<br/>§7.1 diagram and §7.2 say otherwise (F2)"])\n  style app fill:none,stroke:#7c3aed,stroke-dasharray: 5 5,stroke-width:2px,color:#7c3aed\n  style mod fill:none,stroke:#2563eb,stroke-dasharray: 5 5,stroke-width:2px,color:#2563eb\n  style page fill:none,stroke:#059669,stroke-dasharray: 5 5,stroke-width:2px,color:#059669\n  style EAGER fill:#f3e8ff,stroke:#7c3aed,color:#1e293b\n  style LAZY fill:#fee2e2,stroke:#dc2626,color:#1e293b\n  style MT fill:#f3e8ff,stroke:#7c3aed,color:#1e293b\n  style PT fill:#f3e8ff,stroke:#7c3aed,color:#1e293b\n  style TOPIC fill:#e0e7ff,stroke:#4f46e5,color:#1e293b',
+    caption: 'Scopes nest and apply to topologies only. State survives a module exit because the topic outlives the topology that read it.',
+    sections: [
+      s('§7.1', 'Lifecycle scopes', '#71-lifecycle-scopes', 1353, 3, 'Diagram nests topics in scopes (F2); APPLICATION_LAZY has no mechanism (F3).', ['F2', 'F3']),
+      s('§7.1', 'Service topology scopes', '#service-topology-scopes', 1403, 3, 'A meta-topology that activates topologies is an effect inside a topology body.', ['F3']),
+      s('§7.2', 'Scope declaration', '#72-scope-declaration', 1412, 3, '"APPLICATION-scoped state topic": topics have no scope.', ['F2']),
+      s('§7.3', 'Module scope binding', '#73-module-scope-binding', 1432, 0, 'Ref-counting with grace period; StrictMode handled. Strong.'),
+      s('§7.4', 'Topic vs topology lifecycle', '#74-topic-vs-topology-lifecycle', 1459, 0, 'The distinction that gives state persistence for free. Settled.'),
+      s('§7.5', 'Topic cleanup', '#75-topic-cleanup', 1506, 1, 'Manual-only cleanup is right; drop the "earlier drafts" framing.', ['E1']),
+      s('§7.6', 'Initializing variant for async hydration', '#76-initializing-variant-for-async-hydration', 1522, 0, 'Structural rule with a clear exemption. Settled.')
+    ] },
+  { id: 'shell-lower', kind: 'shell', name: 'Lower Shell', sub: 'Modules, pages, UI runtime adapters · rendering effects',
+    box: { x: 40, y: 512, w: 800, h: 96 },
+    summary: 'Pages render topology output and publish gestures as events; the recommended path has no state manager in between. The React integration is worked out to the level of StrictMode and Server Components. Angular and Vue sections are fine as text but raise the scope question: should the reference architecture carry three web frameworks before one platform exists?',
+    diagram: 'flowchart LR\n  TOUT(["Topic: checkout.ui-state"])\n  HOOK["useTopic · StreamBuilder · collectAsState<br/>getCurrentValue() first, then stream"]\n  PAGE["Page = render(state)"]\n  USER["gesture"]\n  PUBL["usePublisher / publisher(\'page:…\')"]\n  TIN(["Topic: checkout.submit-order"])\n  BLOC["BLoC / ViewModel interposed<br/>§14.2: redundant loop, not recommended"]\n  TOUT --> HOOK --> PAGE --> USER --> PUBL --> TIN\n  TOUT -. "second loop" .-> BLOC -.-> PAGE\n  style TOUT fill:#e0e7ff,stroke:#4f46e5,color:#1e293b\n  style HOOK fill:#dbeafe,stroke:#2563eb,color:#1e293b\n  style PAGE fill:#dbeafe,stroke:#2563eb,color:#1e293b\n  style USER fill:#fef3c7,stroke:#d97706,color:#1e293b\n  style PUBL fill:#f3e8ff,stroke:#7c3aed,color:#1e293b\n  style TIN fill:#e0e7ff,stroke:#4f46e5,color:#1e293b\n  style BLOC fill:#fee2e2,stroke:#dc2626,color:#1e293b',
+    caption: 'One loop: topic to render to gesture to topic. The dashed path is the interposition the document argues against.',
+    sections: [
+      s('§5.6', 'Lower shell: modules and pages', '#56-lower-shell-modules-and-pages', 1109, 0, 'Module/topology/page cardinality table. Fine.'),
+      s('§14.1', 'Topology output directly to UI', '#141-the-recommended-path-topology-output-directly-to-ui', 2489, 0, 'The recommended single loop.'),
+      s('§14.2', 'The BLoC / MVVM / MVI interposition problem', '#142-the-bloc--mvvm--mvi-interposition-problem', 2517, 0, 'Consistent argument, well drawn.'),
+      s('§14.3', 'When interposition might be acceptable', '#143-when-interposition-might-be-acceptable', 2565, 0, 'Ephemeral UI state and migration. Right exceptions.'),
+      s('§15.4', 'Bus reference acquisition per platform', '#154-bus-reference-acquisition-per-platform', 2706, 0, 'Binding table per framework.'),
+      s('§16.1', 'Bus lifecycle in browser contexts', '#161-bus-lifecycle-in-browser-contexts', 2743, 0, 'Tab, SSR request, long-lived tab, multi-tab. Clear.'),
+      s('§16.2', 'React integration', '#162-react-integration', 2754, 0, 'useSyncExternalStore on getCurrentValue; StrictMode and RSC covered.'),
+      s('§16.3', 'Angular integration', '#163-angular-integration', 2809, 2, 'Fine as text. Keep in the ref arch before any platform exists?', ['F7']),
+      s('§16.4', 'Vue integration', '#164-vue-integration', 2836, 2, 'Same scope question as Angular.', ['F7']),
+      s('§16.5', 'Web-specific considerations', '#165-web-specific-considerations', 2863, 0, 'Bundle size, hydration, long-lived tabs.')
+    ] },
+  { id: 'navigation', kind: 'lens', name: 'Navigation', sub: '§9.4',
+    summary: 'Pages publish intent; a resolver topology applies guards and deep-link resolution; a shell executor performs the platform call and writes the confirmed route and history. The two-topology split removed the cycle from earlier versions. Result handling still makes a claim the envelope model cannot support.',
+    diagram: 'flowchart LR\n  PG["Page publishes NavIntent"]\n  TI(["nav.intent (Event)"])\n  AUTH(["auth.state"])\n  POL(["nav.access-policy"])\n  RES["nav-resolver (APP_EAGER)<br/>withLatestFrom(auth, policy)<br/>applyAuthGuard · resolveDeepLinks"]\n  TR(["nav.resolved-intent (Event)"])\n  EX["NavigationExecutor (shell)<br/>router.go / pop / popUntil"]\n  TC(["nav.current-route (State)"])\n  TH(["nav.history (Replay 20)"])\n  PG --> TI --> RES --> TR --> EX\n  AUTH --> RES\n  POL --> RES\n  EX -- "after router confirms" --> TC\n  EX --> TH\n  style PG fill:#dbeafe,stroke:#2563eb,color:#1e293b\n  style TI fill:#e0e7ff,stroke:#4f46e5,color:#1e293b\n  style AUTH fill:#e0e7ff,stroke:#4f46e5,color:#1e293b\n  style POL fill:#e0e7ff,stroke:#4f46e5,color:#1e293b\n  style RES fill:#f3e8ff,stroke:#7c3aed,color:#1e293b\n  style TR fill:#e0e7ff,stroke:#4f46e5,color:#1e293b\n  style EX fill:#fef3c7,stroke:#d97706,color:#1e293b\n  style TC fill:#e0e7ff,stroke:#4f46e5,color:#1e293b\n  style TH fill:#e0e7ff,stroke:#4f46e5,color:#1e293b',
+    caption: 'No topology reads what the executor writes, so the graph is acyclic. The executor is the sole writer of route state.',
+    sections: [
+      s('§9.4', 'The problem with distributed navigation', '#the-problem-with-distributed-navigation', 1784, 0, 'Three problems, well motivated.'),
+      s('§9.4', 'Navigation intent as a data contract', '#navigation-intent-as-a-data-contract', 1794, 0, 'NavIntent / ResolvedNavIntent split is clean.'),
+      s('§9.4', 'Navigation topics', '#navigation-topics', 1855, 0, 'Five topics, roles clear.'),
+      s('§9.4', 'The two-topology navigation model', '#the-two-topology-navigation-model', 1889, 1, 'Design is right; three stale version references.', ['E1']),
+      s('§9.4', 'Deep link startup ordering', '#deep-link-startup-ordering', 2013, 0, 'Deterministic bootstrap sequence. Good.'),
+      s('§9.4', 'Navigation result handling', '#navigation-result-handling', 2021, 3, 'Correlation threading unsupported (F4); "module-scoped topic" contradicts §7.4 (F2).', ['F4', 'F2']),
+      s('§9.4', 'When direct navigation is acceptable', '#when-direct-navigation-is-acceptable', 2042, 0, 'Opt-in, honest about small apps.')
+    ] },
+  { id: 'errors', kind: 'lens', name: 'Errors & Resilience', sub: '§10, §11',
+    summary: 'Errors are values; transformers must not throw; the bus does not restart a dead pipeline. §11 separates what the structure eliminates from what discipline must cover, which is the right honesty. One row of the "eliminated" table depends on single-writer and inherits F1.',
+    diagram: 'flowchart LR\n  SRC["Service I/O failure"]\n  TX["Transform exception<br/>(must not throw)"]\n  RES(["Topic&lt;Result&lt;T,E&gt;&gt;"])\n  ERR(["error.app (AppError)"])\n  OPS["retryWhen · catchError · scan breaker<br/>inside the pipeline"]\n  UI["Error module renders toast / dialog"]\n  DEAD["that pipeline terminates;<br/>bus does not restart it"]\n  SRC -- "catch, emit as value" --> RES --> OPS\n  SRC -- "cross-feature" --> ERR --> UI\n  TX --> DEAD\n  style SRC fill:#fee2e2,stroke:#dc2626,color:#1e293b\n  style TX fill:#fee2e2,stroke:#dc2626,color:#1e293b\n  style RES fill:#e0e7ff,stroke:#4f46e5,color:#1e293b\n  style ERR fill:#e0e7ff,stroke:#4f46e5,color:#1e293b\n  style OPS fill:#f3e8ff,stroke:#7c3aed,color:#1e293b\n  style UI fill:#dbeafe,stroke:#2563eb,color:#1e293b\n  style DEAD fill:#fee2e2,stroke:#dc2626,color:#1e293b',
+    caption: 'Two routes for expected failures, one dead end for a throwing transformer. The dead end is deliberate and documented.',
+    sections: [
+      s('§10.1', 'Error propagation model', '#101-error-propagation-model', 2061, 0, 'Sources, routing topics, handlers.'),
+      s('§10.2', 'Principles', '#102-principles', 2104, 0, 'Transformers must not throw; no automatic recovery. Honest.'),
+      s('§10.3', 'Approaches and AppError contract', '#103-error-handling-approaches', 2114, 0, 'Result ADT, error topic, retry, fallback, breaker.'),
+      s('§10.3', 'Circuit breaker as stream state', '#circuit-breaker-as-stream-state', 2151, 1, 'Prose says successes reset the counter; the code never does.', ['E7']),
+      s('§11.1', 'Eliminated by construction', '#111-eliminated-by-construction', 2176, 3, 'Race row depends on single-writer, which shell publishes bypass.', ['F1']),
+      s('§11.2', 'Requires discipline', '#112-requires-discipline-guardrails-provided', 2191, 0, 'Candid list, including the shell-publish gap.'),
+      s('§11.3', 'Quantifiable impact', '#113-quantifiable-impact', 2205, 0, 'Labelled hypothesis. Fine.'),
+      s('§11.4', 'What this means in practice', '#114-what-this-means-in-practice', 2218, 0, 'The honest claim, stated well.')
+    ] },
+  { id: 'contracts', kind: 'lens', name: 'Data Contracts', sub: '§8',
+    summary: 'Native immutable data classes by default, Protobuf when contracts cross platforms or persist, JSON Schema only for server-driven contracts. Never a bare primitive on a topic. Converged; one banned word to remove.',
+    diagram: 'flowchart LR\n  Q{"cross-platform<br/>or persisted?"}\n  NATIVE["Native immutable classes<br/>freezed · data class · struct · Readonly"]\n  PROTO["Protobuf<br/>compatibility by design"]\n  JSON["JSON Schema<br/>server-driven contracts only"]\n  RULE["Never bare primitives:<br/>Topic&lt;AuthState&gt;, not Topic&lt;bool&gt;"]\n  Q -- "no" --> NATIVE\n  Q -- "yes" --> PROTO\n  Q -- "dynamic" --> JSON\n  NATIVE --> RULE\n  PROTO --> RULE\n  JSON --> RULE\n  style Q fill:#fef3c7,stroke:#d97706,color:#1e293b\n  style NATIVE fill:#dbeafe,stroke:#2563eb,color:#1e293b\n  style PROTO fill:#dbeafe,stroke:#2563eb,color:#1e293b\n  style JSON fill:#dbeafe,stroke:#2563eb,color:#1e293b\n  style RULE fill:#d1fae5,stroke:#059669,color:#1e293b',
+    caption: 'The decision turns on persistence: once values are on disk, native classes have no compatibility story.',
+    sections: [
+      s('§8.1', 'Principles', '#81-principles', 1557, 0, 'Named structures, immutability, backward compatibility.'),
+      s('§8.2', 'Platform-native immutable data classes', '#82-recommended-approach-platform-native-immutable-data-classes', 1563, 0, 'Right default with honest cons.'),
+      s('§8.3', 'Protocol Buffers', '#83-alternative-protocol-buffers', 1590, 0, 'Pros and cons balanced.'),
+      s('§8.4', 'JSON Schema', '#84-alternative-json-schema', 1624, 0, 'Correctly ranked last.'),
+      s('§8.5', 'Decision matrix and persistence implications', '#85-decision-matrix-and-persistence-implications', 1645, 1, 'Useful matrix; "load-bearing" at L1658.', ['E4'])
+    ] },
+  { id: 'platforms', kind: 'lens', name: 'Platforms & Ops', sub: '§15, §19, Appendix C',
+    summary: 'One bus contract, six engine adapters, seven UI adapters, plus threading, shutdown, cost model, limits, evolution. Most of it is sensible guidance. The question is whether a one-person project should carry it in the normative document before a single platform runs.',
+    diagram: 'flowchart TB\n  CONTRACT["Bus contract §3<br/>identical on every platform"]\n  subgraph eng ["Reactive engine adapters (Layer 3)"]\n    RXD["RxDart"]\n    FLOW["Flow · RxKotlin"]\n    COMB["Combine · RxSwift"]\n    RXJS["RxJS"]\n  end\n  subgraph ui ["UI runtime adapters (Layer 6)"]\n    FL["Flutter"]\n    CP["Compose · Views"]\n    SU["SwiftUI · UIKit"]\n    WEB["React · Angular · Vue"]\n  end\n  OPS["Operations §19<br/>dispatchers · shutdown · cost model<br/>limits · i18n · evolution"]\n  CONTRACT --> eng\n  eng --> ui\n  CONTRACT --> OPS\n  style eng fill:none,stroke:#7c3aed,stroke-dasharray: 5 5,stroke-width:2px,color:#7c3aed\n  style ui fill:none,stroke:#059669,stroke-dasharray: 5 5,stroke-width:2px,color:#059669\n  style CONTRACT fill:#e0e7ff,stroke:#4f46e5,color:#1e293b\n  style RXD fill:#dbeafe,stroke:#2563eb,color:#1e293b\n  style FLOW fill:#dbeafe,stroke:#2563eb,color:#1e293b\n  style COMB fill:#dbeafe,stroke:#2563eb,color:#1e293b\n  style RXJS fill:#dbeafe,stroke:#2563eb,color:#1e293b\n  style FL fill:#d1fae5,stroke:#059669,color:#1e293b\n  style CP fill:#d1fae5,stroke:#059669,color:#1e293b\n  style SU fill:#d1fae5,stroke:#059669,color:#1e293b\n  style WEB fill:#d1fae5,stroke:#059669,color:#1e293b\n  style OPS fill:#fef3c7,stroke:#d97706,color:#1e293b',
+    caption: 'Eleven adapters hang off one contract. Only the Dart column has a spec, and it targets v0.10.2.',
+    sections: [
+      s('§15.1', 'Reactive primitives by platform', '#151-reactive-primitives-by-platform', 2587, 0, 'Mapping table; Combine ReplaySubject noted as custom.'),
+      s('§15.2', 'Engine choice: Rx vs native', '#152-engine-choice-rx-vs-native', 2598, 0, 'Per-application decision, native recommended.'),
+      s('§15.3', 'Topology DSL per platform', '#153-topology-dsl-per-platform', 2613, 1, 'Class-based declare() here vs topology() elsewhere.', ['E3']),
+      s('§15.5', 'Ordering and scheduler per platform', '#155-ordering-and-scheduler-implementation-per-platform', 2722, 1, 'Verify the RxDart sync and StateFlow conflation rows.', ['F6']),
+      s('§19.1', 'Threading and scheduler semantics', '#191-threading-and-scheduler-semantics', 2969, 0, 'UI vs background dispatchers, transparent hop.'),
+      s('§19.2', 'Bus shutdown and process lifecycle', '#192-bus-shutdown-and-process-lifecycle', 2987, 0, 'Four phases, triggers per context, idempotent.'),
+      s('§19.3', 'Performance and memory cost model', '#193-performance-and-memory-cost-model', 3010, 1, '"Tens of microseconds" is unmeasured; it says so. Keep it hedged.'),
+      s('§19.4', 'Resource limits', '#194-resource-limits', 3043, 0, 'Guardrail config. Fine.'),
+      s('§19.6', 'Internationalization', '#196-internationalization', 3081, 1, 'Receives a dead pointer from §9.3.', ['E5']),
+      s('§19.7', 'Multi-process considerations', '#197-multi-process-considerations', 3095, 0, 'Durable storage crosses the boundary, not the bus.'),
+      s('§19.8', 'Concurrency model', '#198-concurrency-model', 3103, 0, 'Three layers, serial per topic.'),
+      s('§19.9', 'Topic deprecation and contract evolution', '#199-topic-deprecation-and-contract-evolution', 3115, 0, 'Deprecation lint, bridge topology, schema version.'),
+      s('App C', 'Library modularization', '#appendix-c-library-modularization', 3649, 2, 'Seven layers times four platforms before one exists.', ['F7'])
+    ] },
+  { id: 'tooling', kind: 'lens', name: 'Tooling & Verification', sub: '§12.3–12.6, Appendix D',
+    summary: 'Half the structural guarantees are CI lints over the aggregated IR. The verification pipeline and the rule-to-tool table are well thought out. None of it exists, and D.2 says "shipped v1" four times.',
+    diagram: 'flowchart LR\n  SRC["Topology classes"]\n  SCAN["Catalog.scanTopologies<br/>buildDefinition() per class"]\n  IR["Aggregated IR graph"]\n  L1["single-writer"]\n  L2["cycles (SCC)"]\n  L3["scope violation"]\n  L4["sensitive flag"]\n  L5["sequencer (v2)"]\n  DOCS["topics.md · graph.html<br/>topology-graph.json"]\n  YAML["topics.yaml"]\n  REG["Registry classes<br/>Dart · Kotlin · Swift · TS"]\n  YAML -- "codegen" --> REG\n  SRC --> SCAN --> IR\n  IR --> L1\n  IR --> L2\n  IR --> L3\n  IR --> L4\n  IR --> L5\n  IR --> DOCS\n  style SRC fill:#dbeafe,stroke:#2563eb,color:#1e293b\n  style SCAN fill:#f3e8ff,stroke:#7c3aed,color:#1e293b\n  style IR fill:#e0e7ff,stroke:#4f46e5,color:#1e293b\n  style L1 fill:#fef3c7,stroke:#d97706,color:#1e293b\n  style L2 fill:#fef3c7,stroke:#d97706,color:#1e293b\n  style L3 fill:#fef3c7,stroke:#d97706,color:#1e293b\n  style L4 fill:#fef3c7,stroke:#d97706,color:#1e293b\n  style L5 fill:#fef3c7,stroke:#d97706,color:#1e293b\n  style DOCS fill:#d1fae5,stroke:#059669,color:#1e293b\n  style YAML fill:#dbeafe,stroke:#2563eb,color:#1e293b\n  style REG fill:#d1fae5,stroke:#059669,color:#1e293b',
+    caption: 'Everything downstream of the IR is cheap once the IR exists. Build the scan with the Dart core, not after it.',
+    sections: [
+      s('§12.3', 'Type-system-as-proof', '#123-type-system-as-proof', 2284, 0, 'Sealed ADTs and phantom types. Fine.'),
+      s('§12.4', 'What cannot be verified at the type level', '#124-what-cannot-be-verified-at-the-type-level', 2326, 0, 'Property tests as the practical substitute.'),
+      s('§12.5', 'Verification property map', '#125-verification-property-map', 2352, 0, 'Clear table.'),
+      s('§12.6', 'Automated verification pipeline', '#126-automated-verification-pipeline', 2366, 0, 'Checks list matches D.1.', ['E2']),
+      s('D.1', 'Static analysis coverage', '#d1-static-analysis-coverage', 3803, 2, 'Half the guarantees are lints that do not exist; sequence them with the Dart build.', ['F7', 'F2']),
+      s('D.2', 'Per-platform tooling status', '#d2-per-platform-tooling-status', 3820, 2, '"shipped v1" for four platforms with zero code. Reword as plan.', ['F7']),
+      s('D.3', 'Codegen inputs and outputs', '#d3-codegen-inputs-and-outputs', 3860, 0, 'topics.yaml as single source of truth.'),
+      s('D.4', 'Devtools roadmap', '#d4-devtools-roadmap', 3891, 0, 'Reasonable sequencing.'),
+      s('D.5', 'Verification mapping', '#d5-verification-mapping', 3903, 0, 'Useful rule-to-tool table; add the §6.1 body rules to it.')
+    ] },
+  { id: 'positioning', kind: 'lens', name: 'Positioning & Roadmap', sub: '§1, §13, §17, §18, §20–22, App A, B',
+    summary: 'Motivation, claims, comparison, non-goals, adoption, open questions. The honesty is good throughout; §11 to §13 label hypotheses as hypotheses. The comparison omits the closest relatives, Appendix B draws the F1 violation, and the TestBus contract is filed as an open question when it is the first thing to build.',
+    diagram: 'flowchart LR\n  MOT["§1 Motivation<br/>frontend is asynchronous by nature"]\n  CLAIMS["§11 §12 §13 claims<br/>eliminated vs discipline<br/>determinism · portability · AI affordance"]\n  COMP["§17 comparison<br/>Redux · BLoC · TEA · MobX<br/>missing: Kafka Streams, Cycle.js, Effects"]\n  NON["§18 non-goals"]\n  ADOPT["§20 strangler-fig adoption"]\n  OPEN["§21 open questions<br/>TestBus · devtools · teams · persistence"]\n  ROAD["App C / D roadmap<br/>7 layers × 4 platforms"]\n  MOT --> CLAIMS --> COMP --> NON\n  ADOPT --> OPEN --> ROAD\n  style MOT fill:#d1fae5,stroke:#059669,color:#1e293b\n  style CLAIMS fill:#fef3c7,stroke:#d97706,color:#1e293b\n  style COMP fill:#fef3c7,stroke:#d97706,color:#1e293b\n  style NON fill:#d1fae5,stroke:#059669,color:#1e293b\n  style ADOPT fill:#d1fae5,stroke:#059669,color:#1e293b\n  style OPEN fill:#fef3c7,stroke:#d97706,color:#1e293b\n  style ROAD fill:#fee2e2,stroke:#dc2626,color:#1e293b',
+    caption: 'The rationale chain (top) and the delivery chain (bottom). The second one has no code behind it yet.',
+    sections: [
+      s('§1', 'Motivation and design principles', '#1-motivation', 227, 0, 'The asynchronous-frontend paragraph landed well.'),
+      s('§13.1', 'Cross-platform logic portability', '#131-cross-platform-logic-portability', 2411, 0, 'Honest about what is not portable.'),
+      s('§13.2', 'AI-agent affordances', '#132-ai-agent-affordances', 2466, 0, 'Labelled hypothesis.'),
+      s('§17', 'Comparison with existing patterns', '#17-comparison-with-existing-patterns', 2873, 1, 'Add Kafka Streams, Cycle.js, redux-observable / NgRx Effects, Square Workflow.', ['E8']),
+      s('§18', 'What this architecture does not solve', '#18-what-this-architecture-does-not-solve', 2893, 0, 'Eight non-goals, all right.'),
+      s('§20', 'Migration and adoption', '#20-migration-and-adoption', 3166, 0, 'Strangler fig, bridges, flags, workshops.'),
+      s('§21', 'Open questions', '#21-open-questions', 3257, 2, 'TestBus contract (§21.1) is a prerequisite, not an open question. Promote it.'),
+      s('§22', 'FAQ for skeptics', '#22-faq-for-skeptics', 3317, 0, 'Good answers, right tone.'),
+      s('App A', 'Glossary', '#appendix-a-glossary', 3386, 1, '"Replaces the earlier BusInterceptor interface".', ['E1']),
+      s('App B', 'Full system diagram', '#appendix-b-full-system-diagram', 3514, 3, 'Draws three writers on auth.state.', ['F1'])
+    ] }
+];
+
+/* lens row positions */
+(function placeLenses() {
+  var lensIds = ['navigation', 'errors', 'contracts', 'platforms', 'tooling', 'positioning'];
+  var x = 40, w = 148, gap = 12, y = 644, h = 68;
+  lensIds.forEach(function (id, i) {
+    var r = byId(id); r.box = { x: x + i * (w + gap), y: y, w: w, h: h }; r.layout = 'lens';
+  });
+})();
+
+function byId(id) { for (var i = 0; i < REGIONS.length; i++) if (REGIONS[i].id === id) return REGIONS[i]; return null; }
+function findingById(id) { for (var i = 0; i < FINDINGS.length; i++) if (FINDINGS[i].id === id) return FINDINGS[i]; return null; }
+function counts(sections) {
+  var c = [0, 0, 0, 0]; sections.forEach(function (x) { c[x.score]++; }); return c;
+}
+function regionScore(r) { var m = 0; r.sections.forEach(function (x) { if (x.score > m) m = x.score; }); return m; }
+
+/* unique sections across regions, max score per anchor+line */
+function uniqueSections() {
+  var map = {};
+  REGIONS.forEach(function (r) { r.sections.forEach(function (x) {
+    var k = x.anchor + ':' + x.line;
+    if (!map[k] || map[k].score < x.score) map[k] = x;
+  }); });
+  var out = []; for (var k in map) out.push(map[k]); return out;
+}
+
+/* ---------- helpers ---------- */
+var SVGNS = 'http://www.w3.org/2000/svg';
+function svgEl(tag, attrs, text) {
+  var e = document.createElementNS(SVGNS, tag);
+  for (var k in attrs) e.setAttribute(k, attrs[k]);
+  if (text != null) e.textContent = text;
+  return e;
+}
+function h(tag, attrs, children) {
+  var e = document.createElement(tag);
+  if (attrs) for (var k in attrs) {
+    if (k === 'class') e.className = attrs[k];
+    else if (k === 'text') e.textContent = attrs[k];
+    else if (k === 'html') e.innerHTML = attrs[k];
+    else if (k.indexOf('on') === 0) e.addEventListener(k.slice(2), attrs[k]);
+    else e.setAttribute(k, attrs[k]);
+  }
+  (children || []).forEach(function (c) { if (c) e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c); });
+  return e;
+}
+function badgeWidth(level) { return [62, 56, 60, 66][level]; }
+function linkMode() { try { return localStorage.getItem('nidana-map-linkmode') || 'md'; } catch (e) { return 'md'; } }
+function hrefFor(sec) {
+  return linkMode() === 'vscode' ? ('vscode://file' + DOC_ABS + ':' + sec.line) : (DOC_REL + sec.anchor);
+}
+
+/* ---------- atlas ---------- */
+function drawBadge(parent, x, y, level) {
+  var g = svgEl('g', { 'class': 'badge s' + level });
+  var w = badgeWidth(level);
+  g.appendChild(svgEl('rect', { x: x, y: y, width: w, height: 20, rx: 10 }));
+  g.appendChild(svgEl('text', { x: x + w / 2, y: y + 14, 'text-anchor': 'middle' }, LEVELS[level]));
+  parent.appendChild(g);
+}
+function drawBar(parent, x, y, w, c) {
+  var g = svgEl('g', { 'class': 'bar' });
+  g.appendChild(svgEl('rect', { 'class': 'track', x: x, y: y, width: w, height: 6, rx: 3 }));
+  var total = c[0] + c[1] + c[2] + c[3]; if (!total) { parent.appendChild(g); return; }
+  var order = [3, 2, 1, 0], segs = 0; order.forEach(function (l) { if (c[l]) segs++; });
+  var avail = w - 2 * (segs - 1), cx = x;
+  order.forEach(function (l) {
+    if (!c[l]) return;
+    var sw = Math.max(3, avail * c[l] / total);
+    g.appendChild(svgEl('rect', { 'class': 's' + l, x: cx, y: y, width: sw, height: 6, rx: 2 }));
+    cx += sw + 2;
+  });
+  parent.appendChild(g);
+}
+function drawRegion(svg, r) {
+  var b = r.box, level = regionScore(r), c = counts(r.sections), total = r.sections.length;
+  var g = svgEl('g', { 'class': 'region kind-' + r.kind, tabindex: '0', role: 'button', 'data-region': r.id,
+    'aria-label': r.name + ', ' + LEVELS[level] + ', ' + total + ' sections' });
+  g.appendChild(svgEl('rect', { 'class': 'box', x: b.x, y: b.y, width: b.w, height: b.h, rx: 10 }));
+  if (r.layout === 'tall') {
+    var parts = r.name.split(' & ');
+    g.appendChild(svgEl('text', { 'class': 'title', x: b.x + 12, y: b.y + 30 }, parts[0]));
+    g.appendChild(svgEl('text', { 'class': 'title', x: b.x + 12, y: b.y + 50 }, '& ' + parts[1]));
+    ['4 scopes', 'ref-counted', 'module scope', '100 ms grace', '§7'].forEach(function (t, i) {
+      g.appendChild(svgEl('text', { 'class': 'sub', x: b.x + 12, y: b.y + 78 + i * 16 }, t));
+    });
+    drawBadge(g, b.x + 12, b.y + b.h - 62, level);
+    drawBar(g, b.x + 12, b.y + b.h - 24, b.w - 24, c);
+    g.appendChild(svgEl('text', { 'class': 'count', x: b.x + 12, y: b.y + b.h - 32 }, total + ' sections'));
+  } else if (r.layout === 'lens') {
+    g.appendChild(svgEl('text', { 'class': 'title', x: b.x + 10, y: b.y + 24, style: 'font-size:13.5px' }, r.name));
+    drawBadge(g, b.x + 10, b.y + 33, level);
+    g.appendChild(svgEl('text', { 'class': 'count', x: b.x + 10 + badgeWidth(level) + 8, y: b.y + 47 }, total + ' §'));
+    drawBar(g, b.x + 10, b.y + b.h - 11, b.w - 20, c);
+  } else {
+    g.appendChild(svgEl('text', { 'class': 'title', x: b.x + 14, y: b.y + 27 }, r.label || r.name));
+    g.appendChild(svgEl('text', { 'class': 'sub', x: b.x + 14, y: b.y + 46 }, r.sub));
+    drawBadge(g, b.x + b.w - 14 - badgeWidth(level), b.y + 12, level);
+    var bw = Math.min(180, b.w - 28 - 72);
+    drawBar(g, b.x + 14, b.y + b.h - 18, bw, c);
+    g.appendChild(svgEl('text', { 'class': 'count', x: b.x + 14 + bw + 10, y: b.y + b.h - 12 }, total + ' sections'));
+  }
+  function open() { showRegion(r.id); }
+  g.addEventListener('click', open);
+  g.addEventListener('keydown', function (ev) { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); open(); } });
+  svg.appendChild(g);
+}
+function edge(svg, d, cls, both) {
+  var attrs = { 'class': 'edge' + (cls ? ' ' + cls : ''), d: d, 'marker-end': 'url(#arr)' };
+  if (both) attrs['marker-start'] = 'url(#arr-r)';
+  svg.appendChild(svgEl('path', attrs));
+}
+function label(svg, x, y, t, anchor) { svg.appendChild(svgEl('text', { 'class': 'edge-label', x: x, y: y, 'text-anchor': anchor || 'start' }, t)); }
+
+function drawAtlas() {
+  var svg = document.getElementById('atlas');
+  var defs = svgEl('defs');
+  var m = svgEl('marker', { id: 'arr', viewBox: '0 0 10 10', refX: '9', refY: '5', markerWidth: '7', markerHeight: '7', orient: 'auto-start-reverse' });
+  m.appendChild(svgEl('path', { d: 'M0,0 L10,5 L0,10 z' }));
+  var m2 = svgEl('marker', { id: 'arr-r', viewBox: '0 0 10 10', refX: '1', refY: '5', markerWidth: '7', markerHeight: '7', orient: 'auto' });
+  m2.appendChild(svgEl('path', { d: 'M10,0 L0,5 L10,10 z' }));
+  defs.appendChild(m); defs.appendChild(m2); svg.appendChild(defs);
+
+  /* substrate frame */
+  svg.appendChild(svgEl('rect', { 'class': 'frame', x: 40, y: 150, width: 800, height: 330, rx: 14 }));
+  svg.appendChild(svgEl('text', { 'class': 'frame-label', x: 56, y: 174 }, 'Pure substrate · Nidana Bus'));
+  svg.appendChild(svgEl('text', { 'class': 'row-label', x: 40, y: 632 }, 'Cross-cutting lenses'));
+
+  /* edges */
+  edge(svg, 'M215,120 L215,148', '', true); label(svg, 224, 139, 'publish / subscribe');
+  edge(svg, 'M635,120 L635,186', 'dashed'); label(svg, 644, 160, 'defines topologies');
+  edge(svg, 'M370,253 L448,253', '', true); label(svg, 409, 244, 'read / write', 'middle');
+  edge(svg, 'M520,402 L568,402'); label(svg, 544, 393, 'dispatch', 'middle');
+  edge(svg, 'M215,512 L215,482', '', true); label(svg, 224, 502, 'publish / subscribe');
+  edge(svg, 'M830,512 L830,320', 'dashed'); label(svg, 824, 490, 'defines topologies', 'end');
+  edge(svg, 'M864,253 L822,253');
+  svg.appendChild(svgEl('text', { 'class': 'edge-label', x: 852, y: 300, 'text-anchor': 'middle', transform: 'rotate(-90 852 300)' }, 'activates / deactivates'));
+  /* shells to lenses: none; lenses are views, not components */
+
+  REGIONS.forEach(function (r) { drawRegion(svg, r); });
+}
+
+/* ---------- summary tiles ---------- */
+function drawSummary() {
+  var u = uniqueSections(), c = counts(u), total = u.length;
+  var tiles = document.getElementById('tiles'); tiles.innerHTML = '';
+  [3, 2, 1, 0].forEach(function (l) {
+    tiles.appendChild(h('div', { 'class': 'tile' }, [
+      h('div', { 'class': 'n', text: String(c[l]) }),
+      h('div', { 'class': 'l' }, [h('i', { 'class': 'dot s' + l }), LEVELS[l]])
+    ]));
+  });
+  var stack = document.getElementById('stack'); stack.innerHTML = '';
+  [3, 2, 1, 0].forEach(function (l) { if (c[l]) stack.appendChild(h('span', { 'class': 's' + l, style: 'width:' + (100 * c[l] / total) + '%' })); });
+  document.getElementById('stack-note').textContent = total + ' sections scored across ' + REGIONS.length + ' areas. Several conflicts share one root cause (F1).';
+}
+
+/* ---------- detail view ---------- */
+var currentRegion = null;
+function showView(name) {
+  ['map', 'detail', 'findings'].forEach(function (v) {
+    var el = document.getElementById('view-' + v); el.classList.toggle('active', v === name);
+  });
+  document.querySelectorAll('nav.tabs button').forEach(function (b) {
+    b.setAttribute('aria-selected', String(b.getAttribute('data-view') === (name === 'detail' ? 'map' : name)));
+  });
+  window.scrollTo({ top: 0 });
+}
+function showRegion(id, fromHash) {
+  var r = byId(id); if (!r) return;
+  currentRegion = id;
+  if (!fromHash) history.replaceState(null, '', '#r-' + id);
+  renderDetail(r);
+  showView('detail');
+}
+function renderDetail(r) {
+  var host = document.getElementById('view-detail'); host.innerHTML = '';
+  var level = regionScore(r), c = counts(r.sections);
+  var idx = REGIONS.indexOf(r), prev = REGIONS[(idx + REGIONS.length - 1) % REGIONS.length], next = REGIONS[(idx + 1) % REGIONS.length];
+
+  host.appendChild(h('div', { 'class': 'crumbs' }, [
+    h('button', { 'class': 'btn', text: '← Map', onclick: function () { history.replaceState(null, '', '#map'); showView('map'); } }),
+    h('span', { text: r.kind === 'lens' ? 'Cross-cutting lens' : (r.kind === 'shell' ? 'Imperative shell' : 'Pure substrate') })
+  ]));
+  var head = h('div', { 'class': 'detail-head' }, [h('h2', { text: r.name }), h('span', { 'class': 'chip s' + level, text: LEVELS[level] })]);
+  host.appendChild(head);
+
+  var grid = h('div', { 'class': 'detail-grid' });
+  /* left: diagram */
+  var fig = h('figure', { 'class': 'card', style: 'margin:0' });
+  fig.appendChild(h('h3', { text: 'Mechanism' }));
+  var paper = h('div', { 'class': 'paper', id: 'paper-' + r.id });
+  fig.appendChild(paper);
+  fig.appendChild(h('figcaption', { 'class': 'cap', text: r.caption }));
+  grid.appendChild(fig);
+  /* right: verdict + findings */
+  var right = h('div', { 'class': 'card' });
+  right.appendChild(h('h3', { text: 'Verdict' }));
+  right.appendChild(h('p', { text: r.summary }));
+  var dist = h('div', { 'class': 'dist' });
+  [3, 2, 1, 0].forEach(function (l) { if (c[l]) dist.appendChild(h('span', {}, [h('i', { 'class': 'dot s' + l }), ' ', h('b', { text: String(c[l]) }), ' ' + LEVELS[l].toLowerCase()])); });
+  right.appendChild(dist);
+  var fids = {}; r.sections.forEach(function (x) { x.f.forEach(function (f) { fids[f] = true; }); });
+  var flist = Object.keys(fids).sort();
+  if (flist.length) {
+    right.appendChild(h('h3', { text: 'Findings touching this area', style: 'margin-top:16px' }));
+    var ul = h('ul', { 'class': 'findlist' });
+    flist.forEach(function (fid) {
+      var f = findingById(fid); if (!f) return;
+      ul.appendChild(h('li', {}, [
+        h('span', { 'class': 'chip f', text: f.id, role: 'button', tabindex: '0', onclick: function () { showFindings(f.id); } }),
+        h('div', {}, [h('div', { 'class': 't', text: f.title }), f.fix ? h('div', { 'class': 'fix', text: f.fix }) : null, (f.status || f.id.charAt(0) === 'E') ? h('div', { 'class': 'fix', style: 'color:var(--s0);font-weight:500', text: f.status || 'Applied 2026-10-09 in v0.15.0 (editorial pass).' }) : null])
+      ]));
+    });
+    right.appendChild(ul);
+  }
+  grid.appendChild(right);
+  host.appendChild(grid);
+
+  /* sections table */
+  var wrap = h('div', { 'class': 'tablewrap' });
+  var table = h('table', { 'class': 'sections' });
+  table.appendChild(h('thead', {}, [h('tr', {}, [
+    h('th', { text: '§' }), h('th', { text: 'Section' }), h('th', { text: 'Line' }), h('th', { text: 'Score' }), h('th', { text: 'Verdict' })
+  ])]));
+  var tb = h('tbody');
+  r.sections.forEach(function (x) {
+    var verd = h('td', { 'class': 'verd' }, [x.verdict]);
+    x.f.forEach(function (fid) { verd.appendChild(h('span', { 'class': 'fref', text: fid, role: 'button', tabindex: '0', onclick: function () { showFindings(fid); } })); });
+    var lnBtn = h('button', { text: 'L' + x.line, title: 'Copy ' + DOC_SHORT + ':' + x.line, onclick: function () { copyRef(lnBtn, x.line); } });
+    tb.appendChild(h('tr', {}, [
+      h('td', { 'class': 'sec', text: x.sec }),
+      h('td', { 'class': 'ttl' }, [h('a', { href: hrefFor(x), text: x.title, target: linkMode() === 'md' ? '_blank' : '', rel: 'noopener' })]),
+      h('td', { 'class': 'ln' }, [lnBtn]),
+      h('td', {}, [h('span', { 'class': 'chip s' + x.score, text: LEVELS[x.score] })]),
+      verd
+    ]));
+  });
+  table.appendChild(tb); wrap.appendChild(table); host.appendChild(wrap);
+
+  host.appendChild(h('div', { 'class': 'pager' }, [
+    h('button', { 'class': 'btn', text: '← ' + prev.name, onclick: function () { showRegion(prev.id); } }),
+    h('button', { 'class': 'btn', text: next.name + ' →', onclick: function () { showRegion(next.id); } })
+  ]));
+
+  renderMermaid(paper, r);
+}
+function copyRef(btn, line) {
+  var txt = DOC_SHORT + ':' + line;
+  function done() { btn.classList.add('copied'); var old = btn.textContent; btn.textContent = 'copied'; setTimeout(function () { btn.textContent = old; btn.classList.remove('copied'); }, 1200); }
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(done, function () { fallbackCopy(txt, done); });
+    else fallbackCopy(txt, done);
+  } catch (e) { fallbackCopy(txt, done); }
+}
+function fallbackCopy(txt, done) {
+  var ta = document.createElement('textarea'); ta.value = txt; ta.className = 'sr'; document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy'); } catch (e) {}
+  document.body.removeChild(ta); done();
+}
+
+/* ---------- mermaid ---------- */
+var mmReady = false;
+function initMermaid() {
+  if (!window.mermaid) return false;
+  if (!mmReady) {
+    try {
+      window.mermaid.initialize({ startOnLoad: false, theme: 'base', securityLevel: 'loose',
+        themeVariables: { primaryTextColor: '#1e293b', lineColor: '#475569', edgeLabelBackground: '#ffffff', tertiaryTextColor: '#1e293b', fontFamily: 'IBM Plex Sans, system-ui, sans-serif', fontSize: '13px' },
+        flowchart: { htmlLabels: true, curve: 'basis', padding: 8 } });
+      mmReady = true;
+    } catch (e) { return false; }
+  }
+  return true;
+}
+var mmSeq = 0;
+function renderMermaid(paper, r) {
+  var src = MM_INIT + r.diagram;
+  if (!initMermaid()) { showSource(paper, src, 'Diagram library did not load (offline?). Source shown instead.'); return; }
+  var id = 'mm-' + r.id + '-' + (++mmSeq);
+  try {
+    var p = window.mermaid.render(id, src);
+    p.then(function (res) {
+      paper.innerHTML = res.svg;
+      var svg = paper.querySelector('svg'); if (svg) { svg.removeAttribute('height'); svg.style.maxWidth = '100%'; }
+      if (res.bindFunctions) res.bindFunctions(paper);
+    }).catch(function (err) { showSource(paper, src, 'Diagram failed to render: ' + (err && err.message ? err.message : err)); });
+  } catch (err) { showSource(paper, src, 'Diagram failed to render: ' + (err && err.message ? err.message : err)); }
+}
+function showSource(paper, src, note) {
+  paper.innerHTML = '';
+  paper.appendChild(h('p', { 'class': 'note', text: note }));
+  paper.appendChild(h('pre', { text: src.replace(MM_INIT, '') }));
+}
+
+/* ---------- findings view ---------- */
+function showFindings(focusId) {
+  renderFindings();
+  history.replaceState(null, '', '#findings');
+  showView('findings');
+  if (focusId) {
+    var el = document.getElementById('finding-' + focusId);
+    if (el) { el.scrollIntoView({ block: 'start' }); el.focus({ preventScroll: true }); }
+  }
+}
+function renderFindings() {
+  var host = document.getElementById('view-findings'); host.innerHTML = '';
+  host.appendChild(h('h2', { text: 'Findings' }));
+  host.appendChild(h('p', { 'class': 'intro', text: 'The same IDs are used in the review document. F-items are design findings; E-items are editorial. Click an area chip to open that part of the map.' }));
+  function card(f) {
+    var c = h('article', { 'class': 'fcard s' + f.sev, id: 'finding-' + f.id, tabindex: '-1' });
+    c.appendChild(h('div', { 'class': 'h' }, [h('span', { 'class': 'id', text: f.id }), h('span', { 'class': 'chip s' + f.sev, text: LEVELS[f.sev] }), h('span', { 'class': 't', text: f.title })]));
+    c.appendChild(h('p', { 'class': 'body', text: f.body }));
+    if (f.fix) c.appendChild(h('p', { 'class': 'fix', text: 'Fix: ' + f.fix }));
+    var st = f.status || (f.id.charAt(0) === 'E' ? 'Applied 2026-10-09 in v0.15.0 (editorial pass).' : null);
+    if (st) c.appendChild(h('p', { 'class': 'fix', style: 'color:var(--s0);font-weight:500', text: st }));
+    var where = h('div', { 'class': 'where' });
+    f.regions.forEach(function (rid) { var r = byId(rid); if (r) where.appendChild(h('span', { 'class': 'chip r', text: r.name, role: 'button', tabindex: '0', onclick: function () { showRegion(rid); } })); });
+    c.appendChild(where);
+    return c;
+  }
+  host.appendChild(h('h3', { 'class': 'group', text: 'Blocks implementation' }));
+  FINDINGS.filter(function (f) { return f.sev === 3; }).forEach(function (f) { host.appendChild(card(f)); });
+  host.appendChild(h('h3', { 'class': 'group', text: 'Needs a decision' }));
+  FINDINGS.filter(function (f) { return f.sev === 2; }).forEach(function (f) { host.appendChild(card(f)); });
+  host.appendChild(h('h3', { 'class': 'group', text: 'Editorial and verification' }));
+  FINDINGS.filter(function (f) { return f.sev === 1; }).forEach(function (f) { host.appendChild(card(f)); });
+}
+
+/* ---------- routing ---------- */
+function route() {
+  var hsh = (location.hash || '').replace('#', '');
+  if (hsh.indexOf('r-') === 0 && byId(hsh.slice(2))) { showRegion(hsh.slice(2), true); return; }
+  if (hsh === 'findings') { renderFindings(); showView('findings'); return; }
+  showView('map');
+}
+document.querySelectorAll('nav.tabs button').forEach(function (b) {
+  b.addEventListener('click', function () {
+    var v = b.getAttribute('data-view');
+    if (v === 'findings') showFindings(); else { history.replaceState(null, '', '#map'); showView('map'); }
+  });
+});
+window.addEventListener('hashchange', route);
+document.addEventListener('keydown', function (ev) {
+  if (ev.key === 'Escape' && document.getElementById('view-detail').classList.contains('active')) { history.replaceState(null, '', '#map'); showView('map'); }
+});
+
+/* link mode */
+var sel = document.getElementById('linkmode');
+sel.value = linkMode();
+sel.addEventListener('change', function () {
+  try { localStorage.setItem('nidana-map-linkmode', sel.value); } catch (e) {}
+  if (currentRegion && document.getElementById('view-detail').classList.contains('active')) renderDetail(byId(currentRegion));
+});
+
+drawSummary();
+drawAtlas();
+route();
+})();
+</script>
+</body>
+</html>
